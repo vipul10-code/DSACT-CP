@@ -185,7 +185,6 @@ The project workload is distributed equally among all 4 team members by syllabus
 - **Database:** Supabase PostgreSQL (Relational schema, foreign keys, stored procedures)
 - **Frontend:** HTML5, CSS3, Vanilla JavaScript (Fetch API, dynamic DOM updates, no external heavy frameworks)
 - **Testing:** Pytest (Unit, normalization pipeline, ambiguity, and integration tests)
-- **Documentation:** Python-docx (Viva study guide generator), Markdown
 
 ---
 
@@ -202,9 +201,7 @@ SmartVend/
 ├── render.yaml                 # Render cloud deployment blueprint
 ├── schema.sql                  # Supabase PostgreSQL schema, tables, triggers, and stored procedures
 ├── .env.example                # Template showing required environment variable keys without secrets
-├── .gitignore                  # Git ignore rules (.env, venv/, __pycache__/, .pytest_cache/, scratch/)
-├── SmartVend_Study_Guide.docx  # Comprehensive viva and presentation study guide for course review
-├── SmartVend_Study_Guide.md    # Markdown transcript of the study guide
+├── .gitignore                  # Git ignore rules (.env, venv/, __pycache__/, .pytest_cache/, scratch/, study guides)
 ├── frontend/                   # Static UI assets
 │   ├── login.html              # Landing portal offering customer entry and admin sign-in navigation
 │   ├── index.html              # Customer vending interface with live cart, FSM state, and CFG derivation panel
