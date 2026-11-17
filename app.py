@@ -137,6 +137,11 @@ def local_day_bounds():
 
 @app.get("/")
 def index():
+    return send_from_directory("frontend", "login.html")
+
+
+@app.get("/customer")
+def customer():
     return send_from_directory("frontend", "index.html")
 
 
