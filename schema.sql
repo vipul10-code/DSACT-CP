@@ -33,6 +33,25 @@ create table if not exists public.machine_counter (
     last_receipt_date date
 );
 
+create table if not exists public.combo_deal_config (
+    id integer primary key check (id = 1),
+    rules text not null,
+    discounts jsonb not null
+);
+
+alter table public.sales
+    add column if not exists discount_amount integer not null default 0 check (discount_amount >= 0);
+
+insert into public.combo_deal_config(id, rules, discounts)
+values (
+    1,
+    'Deal -> SnackDrink | SnackPairDrink' || E'\n' ||
+    'SnackDrink -> snack beverage' || E'\n' ||
+    'SnackPairDrink -> snack snack beverage',
+    '{"SnackDrink":10,"SnackPairDrink":15}'::jsonb
+)
+on conflict (id) do nothing;
+
 insert into public.machine_counter(id, receipt_count, last_receipt_date)
 values (1, 0, null)
 on conflict (id) do nothing;
@@ -53,10 +72,12 @@ on conflict (slot) do nothing;
 alter table public.inventory enable row level security;
 alter table public.sales enable row level security;
 alter table public.machine_counter enable row level security;
+alter table public.combo_deal_config enable row level security;
 
 revoke all on table public.inventory from anon, authenticated;
 revoke all on table public.sales from anon, authenticated;
 revoke all on table public.machine_counter from anon, authenticated;
+revoke all on table public.combo_deal_config from anon, authenticated;
 
 
 -- Atomic single-item purchase.
@@ -117,7 +138,8 @@ $$;
 create or replace function public.process_cart_purchase(
     p_cart jsonb,
     p_paid integer,
-    p_transaction_id text
+    p_transaction_id text,
+    p_discount_amount integer
 )
 returns jsonb
 language plpgsql
@@ -130,8 +152,10 @@ declare
     v_slot text;
     v_qty integer;
     v_total integer := 0;
+    v_gross_total integer := 0;
     v_change integer;
     v_items jsonb := '[]'::jsonb;
+    v_discount_recorded boolean := false;
 begin
     if p_cart is null or jsonb_array_length(p_cart) = 0 then
         return jsonb_build_object('success', false, 'error', 'Cart is empty.');
@@ -162,6 +186,12 @@ begin
         v_total := v_total + (v_item.price * v_qty);
     end loop;
 
+    v_gross_total := v_total;
+    if p_discount_amount < 0 or p_discount_amount > v_gross_total then
+        return jsonb_build_object('success', false, 'error', 'Invalid combo discount amount.');
+    end if;
+    v_total := v_gross_total - p_discount_amount;
+
     if p_paid < v_total then
         return jsonb_build_object(
             'success', false,
@@ -184,8 +214,12 @@ begin
 
         -- One row per unit keeps the existing daily-sales model intact.
         for i in 1..v_qty loop
-            insert into sales(slot,item_name,price,paid,change_amount,transaction_id)
-            values(v_item.slot,v_item.name,v_item.price,p_paid,v_change,p_transaction_id);
+            insert into sales(slot,item_name,price,paid,change_amount,transaction_id,discount_amount)
+            values(
+                v_item.slot,v_item.name,v_item.price,p_paid,v_change,p_transaction_id,
+                case when not v_discount_recorded then p_discount_amount else 0 end
+            );
+            v_discount_recorded := true;
         end loop;
 
         v_items := v_items || jsonb_build_array(
@@ -202,6 +236,8 @@ begin
     return jsonb_build_object(
         'success', true,
         'items', v_items,
+        'gross_total', v_gross_total,
+        'discount_amount', p_discount_amount,
         'total', v_total,
         'change', v_change
     );
@@ -225,7 +261,7 @@ declare
     v_items jsonb;
     v_sales jsonb;
 begin
-    select count(*), coalesce(sum(price),0), coalesce(sum(paid),0), coalesce(sum(change_amount),0)
+    select count(*), coalesce(sum(price - discount_amount),0), coalesce(sum(paid),0), coalesce(sum(change_amount),0)
     into v_count, v_total, v_received, v_change
     from sales
     where sale_time >= (p_day::timestamp at time zone 'Asia/Kolkata')

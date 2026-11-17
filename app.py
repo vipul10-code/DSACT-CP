@@ -5,6 +5,7 @@ from datetime import datetime, date, time, timedelta
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory, session
 from supabase import create_client, Client
+from combo_cfg import DEFAULT_DISCOUNTS, DEFAULT_RULES, GrammarError, evaluate, normalize, parse_rules
 
 load_dotenv()
 
@@ -37,6 +38,7 @@ INITIAL_ITEMS = [
     {"slot": "B3", "name": "Chocolate", "price": 25, "stock": 7, "category": "snack", "icon": "🍫"},
 ]
 DENOMINATIONS = [5, 10, 20, 50]
+CHANGE_DENOMINATIONS = [50, 20, 10, 5, 2, 1]
 LOW_STOCK_THRESHOLD = 2
 
 
@@ -64,6 +66,48 @@ def machine_counter():
     return data[0] if data else {"id": 1, "receipt_count": 0, "last_receipt_date": None}
 
 
+def combo_config():
+    data = rows_from(
+        supabase.table("combo_deal_config").select("*").eq("id", 1).limit(1).execute()
+    )
+    if data:
+        return data[0]
+    return {"id": 1, "rules": DEFAULT_RULES, "discounts": DEFAULT_DISCOUNTS}
+
+
+def combo_analysis(cart):
+    if not isinstance(cart, list) or not cart:
+        raise ValueError("Add items to your cart to check for combo deals.")
+    all_items = inventory_rows()
+    by_slot = {row["slot"].upper(): row for row in all_items}
+    requested = {}
+    categories = []
+    gross_total = 0
+    for row in cart:
+        slot = str(row.get("slot", "")).upper()
+        quantity = int(row.get("quantity", 0))
+        current = by_slot.get(slot)
+        if not current or quantity <= 0:
+            raise ValueError("Invalid cart item.")
+        requested[slot] = requested.get(slot, 0) + quantity
+        if requested[slot] > current["stock"]:
+            raise ValueError(f"Only {current['stock']} {current['name']} left in stock.")
+        gross_total += current["price"] * quantity
+        categories.extend([current["category"].casefold()] * quantity)
+    config = combo_config()
+    result = evaluate(categories, config["rules"], config["discounts"], [row["category"] for row in all_items])
+    percent = result["discount_percent"] if result["matched"] and not result["ambiguous"] else 0
+    discount_amount = gross_total * percent // 100
+    result.update({
+        "category_sequence": categories,
+        "gross_total": gross_total,
+        "discount_amount": discount_amount,
+        "total": gross_total - discount_amount,
+        "discount_percent": percent,
+    })
+    return requested, result
+
+
 def sets_relations():
     rows = inventory_rows()
     return {
@@ -85,7 +129,7 @@ def sets_relations():
 
 def change_breakdown(amount):
     result = []
-    for d in sorted(DENOMINATIONS, reverse=True):
+    for d in CHANGE_DENOMINATIONS:
         while amount >= d:
             result.append(d)
             amount -= d
@@ -182,6 +226,52 @@ def access_status():
         "receipt_count": counter["receipt_count"],
         "last_receipt_date": counter["last_receipt_date"],
     })
+
+
+@app.get("/api/combo-config")
+def get_combo_config():
+    config = combo_config()
+    return jsonify({"rules": config["rules"], "discounts": config["discounts"]})
+
+
+@app.post("/api/combo-config")
+def update_combo_config():
+    blocked = require_unlock("inventory")
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    try:
+        rules = str(data.get("rules", ""))
+        categories = sorted({row["category"] for row in inventory_rows()})
+        grammar = parse_rules(rules, categories)
+        normalize(grammar, categories)
+        raw_discounts = data.get("discounts", {})
+        if not isinstance(raw_discounts, dict):
+            raise GrammarError("Discounts must map each Deal branch to a percentage.")
+        branch_names = {rhs[0] for rhs in grammar["Deal"]}
+        discounts = {str(name): int(value) for name, value in raw_discounts.items()}
+        if set(discounts) != branch_names:
+            raise GrammarError("Add exactly one discount percentage for every Deal branch.")
+        if any(value < 0 or value > 90 for value in discounts.values()):
+            raise GrammarError("Discount percentages must be between 0 and 90.")
+        supabase.table("combo_deal_config").upsert({
+            "id": 1, "rules": rules, "discounts": discounts,
+        }).execute()
+        return jsonify({"success": True, "rules": rules, "discounts": discounts})
+    except (ValueError, TypeError) as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": str(error)}), 500
+
+
+@app.post("/api/combo-preview")
+def combo_preview():
+    data = request.get_json(silent=True) or {}
+    try:
+        _, analysis = combo_analysis(data.get("cart", []))
+        return jsonify(analysis)
+    except (ValueError, TypeError, GrammarError) as error:
+        return jsonify({"error": str(error)}), 400
 
 
 @app.post("/api/unlock")
@@ -288,13 +378,9 @@ def cart_purchase():
         if not coins or any(c not in DENOMINATIONS for c in coins):
             raise ValueError("Invalid denomination.")
 
-        requested = {}
-        for row in cart:
-            slot = str(row.get("slot", "")).upper()
-            qty = int(row.get("quantity", 0))
-            if not slot or qty <= 0:
-                raise ValueError("Invalid cart item.")
-            requested[slot] = requested.get(slot, 0) + qty
+        requested, deal = combo_analysis(cart)
+        if deal["ambiguous"]:
+            raise ValueError("This cart matches CFG deal branches with different discounts. Ask the admin to fix the ambiguous grammar before checkout.")
 
         paid = sum(coins)
         transaction_id = uuid.uuid4().hex
@@ -304,6 +390,7 @@ def cart_purchase():
                 "p_cart": [{"slot": slot, "quantity": qty} for slot, qty in requested.items()],
                 "p_paid": paid,
                 "p_transaction_id": transaction_id,
+                "p_discount_amount": deal["discount_amount"],
             },
         ).execute()
         payload = result.data
@@ -317,6 +404,9 @@ def cart_purchase():
         receipt = ["SMARTVEND - CART RECEIPT"]
         for row in updated_items:
             receipt.append(f"{row['name']} x{row['quantity_bought']}  ₹{row['line_total']}")
+        receipt.append(f"SUBTOTAL : ₹{deal['gross_total']}")
+        if deal["discount_amount"]:
+            receipt.append(f"CFG COMBO ({deal['discount_percent']}%): -₹{deal['discount_amount']}")
         receipt += [f"TOTAL  : ₹{total}", f"PAID   : ₹{paid}", f"CHANGE : ₹{change}", "THANK YOU"]
         logic = {
             "P": paid >= total,
@@ -331,6 +421,8 @@ def cart_purchase():
         display_items = [fresh_by_slot[x["slot"]] for x in updated_items]
         return jsonify({
             "success": True, "items": display_items, "paid": paid, "total": total,
+            "gross_total": deal["gross_total"], "discount_amount": deal["discount_amount"],
+            "combo": deal,
             "change": change, "change_breakdown": notes, "receipt": receipt,
             "logic": logic, "fsm": fsm(coins, total), "low_stock": logic["R_LOW_STOCK"],
             "message": "Cart dispensed successfully.",
