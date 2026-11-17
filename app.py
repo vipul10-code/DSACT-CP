@@ -1,5 +1,6 @@
 import os
 import uuid
+from itertools import permutations
 from datetime import datetime, date, time, timedelta
 
 from dotenv import load_dotenv
@@ -95,7 +96,40 @@ def combo_analysis(cart):
         gross_total += current["price"] * quantity
         categories.extend([current["category"].casefold()] * quantity)
     config = combo_config()
-    result = evaluate(categories, config["rules"], config["discounts"], [row["category"] for row in all_items])
+    valid_categories = [row["category"] for row in all_items]
+    # A combo describes which categories are present, not the order in which
+    # the customer happened to add them. Keep the submitted order first for a
+    # stable parse tree, then check the distinct category orderings as needed.
+    sequences = [categories]
+    if len(categories) <= 4:
+        sequences = list(dict.fromkeys(permutations(categories)))
+        if tuple(categories) in sequences:
+            sequences.remove(tuple(categories))
+            sequences.insert(0, tuple(categories))
+    candidates = [
+        evaluate(sequence, config["rules"], config["discounts"], valid_categories)
+        for sequence in sequences
+    ]
+    matches = [candidate for candidate in candidates if candidate["matched"]]
+    if matches:
+        # Merge parses found under any add order. Different discount outcomes
+        # remain ambiguous and are blocked at checkout as before.
+        choices = {}
+        for candidate in matches:
+            choices.update(candidate["discount_options"])
+        result = matches[0]
+        matched_sequence = sequences[candidates.index(result)]
+        result.update({
+            "matched": True,
+            "ambiguous": len(set(choices.values())) > 1,
+            "discount_options": choices,
+            "discount_percent": next(iter(set(choices.values()))) if len(set(choices.values())) == 1 else None,
+            "parse_count": sum(candidate["parse_count"] for candidate in matches),
+            "tree_truncated": any(candidate["tree_truncated"] for candidate in matches),
+        })
+        categories = list(matched_sequence)
+    else:
+        result = candidates[0]
     percent = result["discount_percent"] if result["matched"] and not result["ambiguous"] else 0
     discount_amount = gross_total * percent // 100
     result.update({
