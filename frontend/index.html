@@ -46,31 +46,36 @@
 <section class="panel workflow-panel"><div class="section-head"><div><div class="eyebrow">SYSTEM TRACE</div><h3>Live workflow</h3></div><span class="status" id="traceBadge">READY</span></div><div class="trace" id="trace"></div></section>
 </div><script>
 const state={items:[],selected:null,balance:0,coins:[],machineState:'WAITING',sets:null,cart:[],combo:null,lastCombo:null,comboKey:'',comboRequest:0,comboRules:'',inventoryUnlocked:false,receiptUnlocked:false,receiptCount:0,lastReceiptDate:null};
-const $=id=>document.getElementById(id);
-// Helper for document.getElementById
+// Central DOM selector helper
 const $=id=>document.getElementById(id);
 
-// Resilient API fetch wrapper with automatic retries for cloud cold-starts and safe JSON parsing
-async function api(path,options,retries=3,delay=1500){
-  for(let attempt=0;attempt<=retries;attempt++){
-    try{
-      const r=await fetch(path,options);
-      const text=await r.text();
-      let d;
-      try{
-        d=JSON.parse(text);
-      }catch(_){
-        throw new Error(`Server waking up (HTTP ${r.status})...`);
-      }
-      if(!r.ok)throw Error(d.error||`Request failed with status ${r.status}`);
+// Robust API fetch wrapper with timeout support via AbortController and safe JSON parsing
+async function api(path,options={},timeoutMs=15000){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try{
+    const fetchOptions={...options,signal:controller.signal};
+    const r=await fetch(path,fetchOptions);
+    const contentType=r.headers.get('content-type')||'';
+    if(contentType.includes('application/json')){
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.error||`Request failed with status ${r.status}`);
       return d;
-    }catch(err){
-      if(attempt<retries){
-        await new Promise(res=>setTimeout(res,delay));
-        continue;
-      }
-      throw err;
     }
+    const text=await r.text();
+    if(!r.ok)throw new Error(`Server returned HTTP ${r.status}: ${r.statusText||'Error'}`);
+    try{
+      return JSON.parse(text);
+    }catch(_){
+      throw new Error(`Invalid server response (HTTP ${r.status})`);
+    }
+  }catch(err){
+    if(err.name==='AbortError'){
+      throw new Error(`Request timed out after ${timeoutMs/1000}s`);
+    }
+    throw err;
+  }finally{
+    clearTimeout(timer);
   }
 }
 
@@ -222,56 +227,143 @@ async function refreshCombo(){if(!state.cart.length)return;const requestId=++sta
 function syncCombo(){const key=JSON.stringify(state.cart.map(row=>[row.slot,row.quantity]));if(key===state.comboKey)return;state.comboKey=key;state.combo=null;if(state.cart.length){state.lastCombo=null;renderCart();refreshCombo()}else{state.comboRequest++;renderCfgAnalysis()}}
 
 // Calls POST /api/cart-purchase to dispense cart items and calculate change
-async function purchase(){if(!state.cart.length){trace('Cart','Add at least one item before checkout.');return}if(!state.combo){trace('CFG','Wait for the combo grammar check to finish before checkout.');return}try{const d=await api('/api/cart-purchase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cart:state.cart,coins:state.coins})});state.items=state.items.map(x=>{const u=d.items.find(i=>i.slot===x.slot);return u||x});state.sets=(await api('/api/sets-relations')).sets;renderSets();$('receiptBody').textContent=d.receipt.join('\n')+`\nCHANGE NOTES: ${d.change_breakdown.length?d.change_breakdown.map(x=>'₹'+x).join(', '):'None'}`;if(d.discount_amount)trace('CFG Combo',`CYK accepted ${d.combo.category_sequence.join(' ')} · ${d.combo.discount_percent}% discount = ₹${d.discount_amount} saved.`);trace('Logic',`P ∧ Q = ${d.logic.P_AND_Q} · change = ₹${d.change}`);if(d.fsm.length){const r=d.fsm.at(-1);trace('FSM',`Moore: ${r.moore_state} · Mealy: ${r.mealy_state}`)}trace('Dispense',d.message);if(d.low_stock)trace('Alert','One or more cart items are low in stock.');state.selected=null;state.lastCombo=d.combo;state.cart=[];state.combo=null;state.comboKey='[]';state.balance=0;state.coins=[];state.machineState='WAITING';update();setFsm([])}catch(e){trace('Logic',e.message)}}
+async function purchase(){
+  if(!state.cart.length){trace('Cart','Add at least one item before checkout.');return}
+  try{
+    const d=await api('/api/cart-purchase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cart:state.cart,coins:state.coins})});
+    state.items=state.items.map(x=>{const u=d.items.find(i=>i.slot===x.slot);return u||x});
+    state.sets=(await api('/api/sets-relations')).sets;
+    renderSets();
+    $('receiptBody').textContent=d.receipt.join('\n')+`\nCHANGE NOTES: ${d.change_breakdown.length?d.change_breakdown.map(x=>'₹'+x).join(', '):'None'}`;
+    if(d.discount_amount)trace('CFG Combo',`CYK accepted ${d.combo?.category_sequence?.join(' ')||'deal'} · ${d.combo?.discount_percent||0}% discount = ₹${d.discount_amount} saved.`);
+    trace('Logic',`P ∧ Q = ${d.logic.P_AND_Q} · change = ₹${d.change}`);
+    if(d.fsm.length){const r=d.fsm.at(-1);trace('FSM',`Moore: ${r.moore_state} · Mealy: ${r.mealy_state}`)}
+    trace('Dispense',d.message);
+    if(d.low_stock)trace('Alert','One or more cart items are low in stock.');
+    state.selected=null;
+    state.lastCombo=d.combo;
+    state.cart=[];
+    state.combo=null;
+    state.comboKey='[]';
+    state.balance=0;
+    state.coins=[];
+    state.machineState='WAITING';
+    update();
+    setFsm([]);
+  }catch(e){
+    trace('Logic',e.message);
+  }
+}
 
 // Calls POST /api/reset to reset inventory stock and counters for testing
-async function reset(){await api('/api/reset',{method:'POST'});state.items=(await api('/api/inventory')).items;state.sets=(await api('/api/sets-relations')).sets;renderSets();state.selected=null;state.cart=[];state.lastCombo=null;state.combo=null;state.balance=0;state.coins=[];state.machineState='WAITING';$('receiptBody').textContent='No completed transaction.';update();setFsm([]);$('trace').innerHTML='';trace('Reset','Machine returned to WAITING state.')}
+async function reset(){
+  try{
+    await api('/api/reset',{method:'POST'});
+    await Promise.allSettled([loadInventory(),loadSets()]);
+    state.selected=null;
+    state.cart=[];
+    state.lastCombo=null;
+    state.combo=null;
+    state.balance=0;
+    state.coins=[];
+    state.machineState='WAITING';
+    $('receiptBody').textContent='No completed transaction.';
+    update();
+    setFsm([]);
+    $('trace').innerHTML='';
+    trace('Reset','Machine returned to WAITING state.');
+  }catch(e){
+    trace('Reset',e.message);
+  }
+}
 
-// Initializes application state on page load: fetches inventory, relations, and combo rules
-async function init(){
+// Ping /api/health with progress message to smoothly handle cloud free-tier cold-start wake-up
+async function wakeUpServer(maxSeconds=90,intervalSeconds=3){
+  const startTime=Date.now();
   const productGrid=$('productGrid');
   const comboDeals=$('comboDeals');
-  if(productGrid&&!state.items.length){
-    productGrid.innerHTML='<div style="grid-column:1/-1;padding:24px;text-align:center;color:var(--muted);font-size:13px;">Connecting to SmartVend server…</div>';
-  }
-  if(comboDeals&&!state.comboRules){
-    comboDeals.innerHTML='<div class="deal-card deal-loading">Connecting to SmartVend server…</div>';
-  }
-  try{
-    const invData=await api('/api/inventory');
-    state.items=invData.items||[];
-    renderProducts();
 
-    const relationData=await api('/api/sets-relations');
-    state.sets=relationData.sets;
-    renderSets();
-
-    try{
-      const cfg=await api('/api/combo-config');
-      state.comboRules=cfg.rules;
-      $('cfgRulesView').textContent=cfg.rules;
-      renderComboDeals(cfg);
-    }catch(error){
-      $('cfgRulesView').textContent=`Combo grammar unavailable: ${error.message}`;
-      if(comboDeals){
-        comboDeals.innerHTML=`<div class="deal-card deal-loading">Combo deals could not be loaded: ${error.message}</div>`;
-      }
+  while((Date.now()-startTime)/1000<maxSeconds){
+    const elapsed=Math.max(1,Math.round((Date.now()-startTime)/1000));
+    const msg=`Waking up the server (free hosting takes up to a minute)... (${elapsed}s)`;
+    if(productGrid&&!state.items.length){
+      productGrid.innerHTML=`<div style="grid-column:1/-1;padding:24px;text-align:center;color:var(--muted);font-size:13px;">${msg}</div>`;
     }
-    update();
-    trace('System','SmartVend initialized and ready.');
-  }catch(error){
-    trace('System',`Initialization error: ${error.message}`);
+    if(comboDeals&&!state.comboRules){
+      comboDeals.innerHTML=`<div class="deal-card deal-loading">${msg}</div>`;
+    }
+    try{
+      const h=await api('/api/health',{},3500);
+      if(h&&h.ok)return true;
+    }catch(_){
+      // Still spinning up
+    }
+    await new Promise(res=>setTimeout(res,intervalSeconds*1000));
+  }
+  return false;
+}
+
+// Loads catalog inventory independently
+async function loadInventory(){
+  const productGrid=$('productGrid');
+  try{
+    const data=await api('/api/inventory');
+    state.items=data.items||[];
+    renderProducts();
+    return true;
+  }catch(err){
     if(productGrid){
-      productGrid.innerHTML=`<div style="grid-column:1/-1;padding:20px;text-align:center;color:var(--red);font-size:13px;background:#fff5f5;border:1px solid #fed7d7;border-radius:6px;">
-        <strong>Server is waking up or temporarily unreachable</strong>
-        <p style="margin:6px 0 12px;font-size:12px;color:var(--muted);">${error.message}</p>
-        <button onclick="init()" style="padding:6px 14px;background:var(--accent);color:#fff;border:0;border-radius:4px;font-weight:700;cursor:pointer;">Retry Connection</button>
+      productGrid.innerHTML=`<div style="grid-column:1/-1;padding:18px;text-align:center;color:var(--red);background:#fff5f5;border:1px solid #fed7d7;border-radius:6px;font-size:13px;">
+        <strong>Unable to load inventory products</strong>
+        <p style="margin:4px 0 10px;font-size:12px;color:var(--muted);">${err.message}</p>
+        <button onclick="loadInventory()" style="padding:6px 14px;background:var(--accent);color:#fff;border:0;border-radius:4px;font-weight:700;cursor:pointer;">Retry Products</button>
       </div>`;
     }
-    if(comboDeals){
-      comboDeals.innerHTML=`<div class="deal-card deal-loading">Server is waking up. <button onclick="init()" style="margin-left:6px;padding:2px 8px;cursor:pointer;">Retry</button></div>`;
-    }
+    trace('Inventory',`Failed to load: ${err.message}`);
+    return false;
   }
+}
+
+// Loads Sets and Relations independently
+async function loadSets(){
+  try{
+    const data=await api('/api/sets-relations');
+    state.sets=data.sets;
+    renderSets();
+    return true;
+  }catch(err){
+    trace('Sets',`Failed to load: ${err.message}`);
+    $('relationView').innerHTML=`<span style="color:var(--red)">Sets data unavailable: ${err.message}</span> <button onclick="loadSets()" style="margin-left:6px;padding:2px 6px;font-size:11px;cursor:pointer;">Retry</button>`;
+    return false;
+  }
+}
+
+// Loads CFG combo deal rules independently
+async function loadCombos(){
+  const comboDeals=$('comboDeals');
+  try{
+    const cfg=await api('/api/combo-config');
+    state.comboRules=cfg.rules;
+    $('cfgRulesView').textContent=cfg.rules;
+    renderComboDeals(cfg);
+    return true;
+  }catch(err){
+    $('cfgRulesView').textContent=`Combo grammar unavailable: ${err.message}`;
+    if(comboDeals){
+      comboDeals.innerHTML=`<div class="deal-card deal-loading">Combos unavailable: ${err.message} <button onclick="loadCombos()" style="margin-left:8px;padding:2px 8px;cursor:pointer;">Retry Combos</button></div>`;
+    }
+    trace('Combos',`Failed to load: ${err.message}`);
+    return false;
+  }
+}
+
+// Initializes application state on page load: wake-up ping followed by independent panel loading
+async function init(){
+  trace('System','Connecting to server...');
+  await wakeUpServer();
+  await Promise.allSettled([loadInventory(),loadSets(),loadCombos()]);
+  update();
+  trace('System','SmartVend initialized and ready.');
 }
 document.querySelectorAll('[data-coin]').forEach(b=>b.onclick=()=>addCoin(Number(b.dataset.coin)));$('buyBtn').onclick=purchase;$('resetBtn').onclick=reset;$('addCartBtn').onclick=addSelectedToCart;$('clearCartBtn').onclick=clearCart;$('cartBtn').onclick=()=>{$('cartPanel').scrollIntoView({behavior:'smooth',block:'nearest'})};init().catch(e=>trace('System',e.message));
 </script>

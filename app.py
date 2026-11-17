@@ -325,15 +325,22 @@ def admin():
 @app.get("/api/health")
 def health():
     """
-    Health check endpoint: verifies Flask server and Supabase connectivity.
+    Health check endpoint: verifies Flask server is running and ready.
+    Does not block or fail deploy on cold external database queries.
     
-    Output: JSON {"ok": true, "database": "Supabase PostgreSQL"} (200) or error (503).
+    Output: JSON {"ok": true, "database": "Supabase PostgreSQL" | "connecting"} (200).
     """
+    db_ok = False
     try:
         supabase.table("machine_counter").select("id").eq("id", 1).limit(1).execute()
-        return jsonify({"ok": True, "database": "Supabase PostgreSQL"})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 503
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return jsonify({
+        "ok": True,
+        "database": "Supabase PostgreSQL" if db_ok else "connecting",
+        "status": "ready"
+    }), 200
 
 
 @app.get("/api/inventory")
