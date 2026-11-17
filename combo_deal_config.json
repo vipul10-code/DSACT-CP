@@ -1,0 +1,12 @@
+{
+  "id": 1,
+  "rules": "Deal -> Combo | Combo Deal\nCombo -> snack beverage | snack snack beverage | beverage Combo2\nCombo2 -> snack",
+  "discounts": {
+    "snack beverage": 10,
+    "snack snack beverage": 15,
+    "beverage Combo2": 10,
+    "beverage snack": 10,
+    "Combo": 10,
+    "Deal": 10
+  }
+}

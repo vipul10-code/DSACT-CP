@@ -34,17 +34,55 @@ The Supabase secret key must only be configured on the Flask server. Never place
 
 The schema also creates a default combo grammar and the discount column used by checkout. When upgrading an existing Supabase database, run the updated `schema.sql` again so it creates the combo configuration table and updates the cart purchase function.
 
-## Combo deals and Unit V CFG
+## Combo deals and Unit V CFG (Pricing Engine)
 
-Combo offers are displayed directly below the customer product catalog. The customer cart turns its product categories into a token sequence and checks that sequence with the CYK algorithm. For example, a snack followed by a beverage is parsed against the grammar below and receives the `SnackDrink` discount:
+SmartVend implements a formal Context-Free Grammar (CFG) pricing rules engine (Unit V) over product categories (`beverage`: Water, Juice, Soda; `snack`: Chips, Cookies, Chocolate). 
 
+The cart's ordered category sequence is parsed against the grammar. A successful parse awards a discount; a failed parse simply means regular pricing (it acts as a pricing engine, not an input validator).
+
+### Shipped Grammar:
 ```text
-Deal -> SnackDrink | SnackPairDrink
-SnackDrink -> snack beverage
-SnackPairDrink -> snack snack beverage
+Deal  -> Combo | Combo Deal
+Combo -> snack beverage | snack snack beverage | beverage Combo2
+Combo2 -> snack
 ```
 
-The admin can edit these productions and set a discount percentage for every alternative under `Deal`. The app removes ε-productions, unit productions, and useless symbols, converts the grammar to Chomsky Normal Form, and checks the category sequence with CYK. A dedicated Unit V CFG panel between the Unit I–III cards and the live workflow shows the applied discount, normalization steps, derivation, and parse tree. If one cart parses through different Deal branches that offer different discounts, checkout is blocked until the grammar is made unambiguous for that sequence or the branches are given the same discount.
+### Supported Discounts:
+- `snack beverage`: 10% discount
+- `snack snack beverage`: 15% discount
+- `beverage Combo2` (`beverage snack`): 10% discount
+- Chained deals (e.g. `[snack, beverage, beverage, snack]`): derives via `Deal -> Combo Deal`
+
+### 4-Stage Normalization Pipeline:
+When an admin edits the grammar via the Admin Panel or `/api/combo-config`, the engine executes:
+1. **Elimination of ε-productions:** Finds nullable symbols and creates non-empty variants.
+2. **Elimination of unit productions:** Computes unit closures ($A \Rightarrow^* B$) and substitutes non-unit bodies.
+3. **Elimination of useless symbols:** Filters non-generating symbols (bottom-up) and unreachable symbols (top-down from `Deal`).
+4. **Conversion to Chomsky Normal Form (CNF):** Converts all productions into either $A \to a$ (unary terminal) or $A \to B C$ (binary nonterminals).
+5. **CYK Parsing Algorithm:** $O(n^3)$ dynamic programming recognition over the token sequence to produce full parse trees.
+6. **Parse Tree Reconstruction & Leftmost Derivation:** Maps synthetic CNF nodes back to the original human-readable grammar and generates step-by-step leftmost derivations ($Deal \Rightarrow \dots$).
+
+### Ambiguity Handling & Policy:
+If an entered grammar is ambiguous (multiple parse trees yielding conflicting discounts), the engine:
+- Detects the ambiguity via parse tree enumeration in CYK (`ambiguous: true`, `parse_count > 1`).
+- Identifies all distinct discount choices (e.g. 10% vs 25%).
+- Employs a **Best-Discount Resolution Policy** in customer checkout, awarding the highest discount rate to the buyer while logging and surfacing the ambiguity details in the UI and API response.
+- Provides the shipped default grammar which is provably unambiguous.
+
+### API Endpoints:
+- `GET /api/combo-config` — returns active grammar rules and discount mappings.
+- `POST /api/combo-config` — protected admin route to edit rules and discounts; returns normalization steps and intermediate grammars.
+- `POST /api/combo-cnf-steps` — public verification endpoint returning pipeline stages and intermediate grammars (`0_original`, `1_no_epsilon`, `2_no_unit`, `3_no_useless`, `4_cnf`).
+- `POST /api/combo-preview` — parses a cart category sequence without purchase, returning discount, tree, derivation, and ambiguity status.
+- `POST /api/cart-purchase` — executes atomic purchase with Supabase RPC `process_cart_purchase`, applying `p_discount_amount`.
+
+## Running the Automated Test Suite
+
+Run the full pytest suite in PowerShell:
+```powershell
+.\venv\Scripts\pytest -v tests/test_combo.py
+```
+This runs 10 acceptance test cases verifying single combos, chained combos, non-matching carts, ambiguity detection, CNF transformations on 5 distinct grammars, CYK vs brute-force equivalence, admin authentication, and core regression tests.
 
 ## Run locally
 

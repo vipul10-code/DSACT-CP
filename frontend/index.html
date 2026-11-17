@@ -48,7 +48,60 @@
 const state={items:[],selected:null,balance:0,coins:[],machineState:'WAITING',sets:null,cart:[],combo:null,lastCombo:null,comboKey:'',comboRequest:0,comboRules:'',inventoryUnlocked:false,receiptUnlocked:false,receiptCount:0,lastReceiptDate:null};
 const $=id=>document.getElementById(id);
 async function api(path,options){const r=await fetch(path,options);const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
-function renderComboDeals(config){const categories=new Set(state.items.map(item=>item.category.toLowerCase()));const root=config.rules.split(/\r?\n/).find(line=>/^\s*Deal\s*->/.test(line));const branches=root?root.split(/->/).slice(1).join('->').split('|').map(name=>name.trim()).filter(name=>/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)):[];const host=$('comboDeals');if(!branches.length){host.innerHTML='<div class="deal-card deal-loading">No combo deals are currently configured.</div>';return}host.innerHTML='';branches.forEach(branch=>{const rule=config.rules.split(/\r?\n/).find(line=>new RegExp(`^\\s*${branch}\\s*->`).test(line));const forms=rule?rule.split(/->/).slice(1).join('->').split('|').map(part=>part.trim()):[];const descriptions=forms.map(form=>{const tokens=form.split(/\s+/).filter(Boolean);if(tokens.length&&tokens.every(token=>categories.has(token.toLowerCase()))){const counts={};tokens.forEach(token=>{const key=token.toLowerCase();counts[key]=(counts[key]||0)+1});return Object.entries(counts).map(([category,count])=>`${count>1?count+' ':''}${category}${count>1?'s':''}`).join(' + ')}return form||'Custom combo pattern'});const title=descriptions.length?descriptions.join(' or '):branch.replace(/([a-z])([A-Z])/g,'$1 $2');const card=document.createElement('article');card.className='deal-card';const heading=document.createElement('strong');heading.textContent=`${title} combo`;const detail=document.createElement('p');detail.textContent=forms.map(form=>{const tokens=form.split(/\s+/).filter(Boolean);if(!tokens.length||!tokens.every(token=>categories.has(token.toLowerCase())))return`CFG pattern: ${form}`;return tokens.map(token=>{const category=token.toLowerCase();const choices=state.items.filter(item=>item.category.toLowerCase()===category).map(item=>item.name);return`choose ${category} (${choices.join(', ')})`}).join(', then ')}).join(' · ')||'Add the matching products to your cart in this category order.';const discount=document.createElement('span');discount.className='deal-discount';discount.textContent=`${Number(config.discounts?.[branch]||0)}% OFF`;card.append(heading,detail,discount);host.append(card)})}
+function renderComboDeals(config){
+  const categories=new Set(state.items.map(item=>item.category.toLowerCase()));
+  const lines=config.rules.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const rulesMap={};
+  lines.forEach(line=>{
+    if(line.startsWith('#')||!line.includes('->'))return;
+    const [lhs,rhs]=line.split('->').map(s=>s.trim());
+    rulesMap[lhs]=rhs.split('|').map(s=>s.trim());
+  });
+
+  const host=$('comboDeals');
+  const forms=rulesMap['Combo']||['snack beverage','snack snack beverage','beverage snack'];
+  host.innerHTML='';
+
+  forms.forEach(form=>{
+    // Expand single nonterminal alias if present (e.g. Combo2 -> snack)
+    const tokens=form.split(/\s+/).map(tok=>{
+      if(rulesMap[tok]&&rulesMap[tok].length===1&&categories.has(rulesMap[tok][0].toLowerCase())){
+        return rulesMap[tok][0];
+      }
+      return tok;
+    });
+
+    const isAllCategories=tokens.every(token=>categories.has(token.toLowerCase()));
+    let title=form;
+    let detail='';
+    if(isAllCategories){
+      const counts={};
+      tokens.forEach(tok=>{const k=tok.toLowerCase();counts[k]=(counts[k]||0)+1});
+      title=Object.entries(counts).map(([cat,c])=>`${c>1?c+' ':''}${cat}${c>1?'s':''}`).join(' + ');
+      detail=tokens.map(tok=>{
+        const cat=tok.toLowerCase();
+        const choices=state.items.filter(i=>i.category.toLowerCase()===cat).map(i=>i.name);
+        return`choose ${cat} (${choices.join(', ')})`;
+      }).join(', then ');
+    } else {
+      title=form;
+      detail=`CFG pattern: ${form}`;
+    }
+
+    const discountRate=Number(config.discounts?.[form]||config.discounts?.[tokens.join(' ')]||config.discounts?.['Combo']||10);
+    const card=document.createElement('article');
+    card.className='deal-card';
+    const heading=document.createElement('strong');
+    heading.textContent=`${title.charAt(0).toUpperCase()+title.slice(1)} combo`;
+    const p=document.createElement('p');
+    p.textContent=detail||'Add matching products to your cart in this category order.';
+    const discount=document.createElement('span');
+    discount.className='deal-discount';
+    discount.textContent=`${discountRate}% OFF`;
+    card.append(heading,p,discount);
+    host.append(card);
+  });
+}
 function trace(title,message){const el=$('trace'),step=document.createElement('div');step.className='trace-step active';step.innerHTML=`<strong>${title}</strong><small>${message}</small>`;el.prepend(step);while(el.children.length>6)el.lastChild.remove()}
 function renderSets(){const sets=state.sets;if(!sets){$('slotSet').textContent='{—}';$('itemSet').textContent='{—}';$('categorySet').textContent='{—}';return}const formatSet=values=>`{${values.join(', ')}}`;$('slotSet').textContent=formatSet(sets.slots);$('itemSet').textContent=formatSet(sets.item_names);$('categorySet').textContent=formatSet(sets.categories)}
 function cartQty(slot){const row=state.cart.find(x=>x.slot===slot);return row?row.quantity:0}
@@ -61,7 +114,7 @@ function setFsm(rows){if(!rows.length){$('mooreState').textContent='WAITING';$('
 async function refreshFsm(){const total=cartTotal()||state.selected?.price||0;if(!total){setFsm([]);return}const q=state.coins.join(',');const slot=state.selected?.slot;if(slot&&!state.cart.length){const d=await api(`/api/compare?slot=${slot}&coins=${q}`);setFsm(d.rows)}else{const rows=[];let balance=0;state.coins.forEach(c=>{balance+=c;rows.push({moore_state:balance>=total?'READY':'ACCEPTING',moore_output:balance>=total?'DISPENSE':'WAIT',mealy_state:balance>=total?'READY':'ACCEPTING',mealy_output:balance>=total?'DISPENSE':'WAIT'})});setFsm(rows)}}
 async function addCoin(coin){if(!state.selected&&!state.cart.length){trace('Payment','Select a product before inserting payment.');return}state.coins.push(coin);state.balance+=coin;state.machineState=state.balance>=(cartTotal()||state.selected.price)?'READY':'ACCEPTING';update();await refreshFsm();trace('Payment',`₹${coin} inserted · balance = ₹${state.balance}`)}
 function updateLogic(){const item=state.selected;if(!item&&!state.cart.length){$('logicLines').innerHTML='<div><span>P: balance ≥ price</span><b>—</b></div><div><span>Q: stock available</span><b>—</b></div><div><span>P ∧ Q</span><b>—</b></div><div><span>R: low stock</span><b>—</b></div>';return}const total=cartTotal()||item.price;const P=state.balance>=total;const Q=state.cart.length?state.cart.every(x=>{const inv=state.items.find(i=>i.slot===x.slot);return inv&&inv.stock>=x.quantity}):item.stock>0;const R=state.cart.length?state.cart.some(x=>{const inv=state.items.find(i=>i.slot===x.slot);return inv&&inv.stock-x.quantity<2}):item.stock-1<2;const vals=[['P: balance ≥ total',P],['Q: stock available',Q],['P ∧ Q',P&&Q],['R: low stock',R]];$('logicLines').innerHTML=vals.map(([t,v])=>`<div><span>${t}</span><b class="${v?'true':'false'}">${v}</b></div>`).join('')}
-function renderCart(){const total=cartTotal();$('cartCount').textContent=cartCount();$('cartSummary').textContent=`${cartCount()} item${cartCount()===1?'':'s'}`;$('cartTotal').textContent=`₹${total}`;if(!state.cart.length){$('cartItems').innerHTML='<div class="cart-empty">Your cart is empty.</div>'}else{$('cartItems').innerHTML=state.cart.map(x=>`<div class="cart-item"><div><strong>${x.name}</strong><br><small>₹${x.price} each</small></div><div class="qty-controls"><button onclick="changeQty('${x.slot}',-1)">−</button><strong>${x.quantity}</strong><button onclick="changeQty('${x.slot}',1)">+</button></div><strong>₹${x.price*x.quantity}</strong></div>`).join('')};$('required').textContent=total?`₹${total}`:(state.selected?`₹${state.selected.price}`:'—');$('buyBtn').disabled=!(state.cart.length&&state.balance>=total);if(!state.cart.length){$('comboOffer').textContent='Add products to check whether your cart forms a CFG combo deal.'}else if(state.combo?.ambiguous){$('comboOffer').innerHTML='<strong>Combo paused:</strong> this cart has ambiguous grammar parses with different discounts. Ask an admin to fix the deal grammar.'}else if(state.combo?.matched){$('comboOffer').innerHTML=`<strong>CFG combo applied:</strong> ${state.combo.discount_percent}% off · save ₹${state.combo.discount_amount}`}else{$('comboOffer').textContent='Checking category sequence against the combo grammar…'}}
+function renderCart(){const total=cartTotal();$('cartCount').textContent=cartCount();$('cartSummary').textContent=`${cartCount()} item${cartCount()===1?'':'s'}`;$('cartTotal').textContent=`₹${total}`;if(!state.cart.length){$('cartItems').innerHTML='<div class="cart-empty">Your cart is empty.</div>'}else{$('cartItems').innerHTML=state.cart.map(x=>`<div class="cart-item"><div><strong>${x.name}</strong><br><small>₹${x.price} each</small></div><div class="qty-controls"><button onclick="changeQty('${x.slot}',-1)">−</button><strong>${x.quantity}</strong><button onclick="changeQty('${x.slot}',1)">+</button></div><strong>₹${x.price*x.quantity}</strong></div>`).join('')};$('required').textContent=total?`₹${total}`:(state.selected?`₹${state.selected.price}`:'—');$('buyBtn').disabled=!(state.cart.length&&state.balance>=total);if(!state.cart.length){$('comboOffer').textContent='Add products to check whether your cart forms a CFG combo deal.'}else if(state.combo?.ambiguous){$('comboOffer').innerHTML=`<strong>CFG combo applied:</strong> ${state.combo.discount_percent}% off · save ₹${state.combo.discount_amount} <small style="display:block;color:#f4512b;">(Ambiguity resolved via best-discount policy: ${state.combo.parse_count} derivations detected)</small>`}else if(state.combo?.matched){$('comboOffer').innerHTML=`<strong>CFG combo applied:</strong> ${state.combo.discount_percent}% off · save ₹${state.combo.discount_amount}`}else{$('comboOffer').textContent='Checking category sequence against the combo grammar…'}}
 function renderSelected(){const item=state.selected;if(!item){$('selectedProduct').innerHTML='<div class="empty">Choose an item from the left</div>';$('addCartBtn').disabled=true;return}const qty=cartQty(item.slot);$('selectedProduct').innerHTML=`<div class="selected-main"><div><h4>${item.name}</h4><p>${item.slot} · ${item.category} · ${item.stock} in stock</p></div><div class="price">₹${item.price}</div></div><div class="receipt-meta">${qty} already in cart</div>`;$('addCartBtn').disabled=qty>=item.stock}
 function update(){const item=state.selected;const total=cartTotal();$('machineState').textContent=state.machineState;$('displayBalance').textContent=`₹${state.balance}`;$('displayMessage').textContent=total?`Cart · ₹${total}`:(item?`${item.name} · ₹${item.price}`:'Select an item to begin');$('balance').textContent=`₹${state.balance}`;renderSelected();renderCart();$('relationView').innerHTML=item?`<b>Slot → Item</b><br>(${item.slot}, ${item.name})<br><b>Item → Price</b><br>(${item.name}, ₹${item.price})<br><b>Item → Stock</b><br>(${item.name}, ${item.stock})<br><b>Item → Category</b><br>(${item.name}, ${item.category})`:'Select a product to inspect its relations.';updateLogic();renderProducts();syncCombo();renderCfgAnalysis()}
 function addSelectedToCart(){if(!state.selected)return;const item=state.selected;const existing=state.cart.find(x=>x.slot===item.slot);if(existing){if(existing.quantity>=item.stock){trace('Cart','No more stock available for this item.');return}existing.quantity++}else state.cart.push({slot:item.slot,name:item.name,price:item.price,quantity:1});state.balance=0;state.coins=[];state.machineState='ACCEPTING';update();trace('Cart',`${item.name} added to cart.`)}
@@ -69,7 +122,35 @@ function changeQty(slot,delta){const row=state.cart.find(x=>x.slot===slot);const
 function clearCart(){state.cart=[];state.combo=null;state.lastCombo=null;state.balance=0;state.coins=[];state.machineState='WAITING';update();setFsm([]);trace('Cart','Cart cleared.')}
 function treeText(node,depth=0){if(!node)return'No parse tree: the category sequence is not generated by the current CFG.';return`${'  '.repeat(depth)}${node.symbol}${node.children.length?'\n'+node.children.map(child=>treeText(child,depth+1)).join('\n'):''}`}
 function treeProductions(node,rows=[]){if(node.children.length){rows.push(`${node.symbol} → ${node.children.map(child=>child.symbol).join(' ')}`);node.children.forEach(child=>treeProductions(child,rows))}return rows}
-function renderCfgAnalysis(){const d=state.combo||(state.cart.length?null:state.lastCombo);$('cfgNormalizedView').textContent=d?.normalized_grammar||'Normalized grammar appears after the cart is parsed.';if(!state.cart.length&&!d){$('cfgResult').textContent='Add products to the cart. Their category sequence becomes the CFG input string.';$('cfgDerivation').textContent='Derivation will appear here.';$('cfgTreeView').textContent='Parse tree will appear here.';return}if(!d){$('cfgResult').textContent='Checking the cart category sequence with CYK…';$('cfgDerivation').textContent='Derivation will appear after CYK finishes.';$('cfgTreeView').textContent='Parse tree will appear here.';return}const sequence=d.category_sequence.join(' ');const cleanup=d.normalization_steps.join(' → ');const prefix=state.cart.length?'':'Last checkout · ';if(d.ambiguous){$('cfgResult').textContent=`${prefix}Input: ${sequence}. CYK found ${d.parse_count}${d.tree_truncated?'+':''} parse(s) with different discount outcomes: ${Object.entries(d.discount_options).map(([branch,rate])=>`${branch} ${rate}%`).join(', ')}. Checkout is paused. Fix: make each category sequence derive through only one Deal branch, or assign the overlapping branches the same discount. ${cleanup}.`}else if(d.matched){$('cfgResult').textContent=`${prefix}Input: ${sequence}. CYK accepted it: ${d.discount_percent}% off ₹${d.gross_total} = save ₹${d.discount_amount}; customer pays ₹${d.total}. ${d.parse_count}${d.tree_truncated?'+':''} parse(s). ${cleanup}.`}else{$('cfgResult').textContent=`${prefix}Input: ${sequence}. CYK found no derivation, so no combo discount applies. ${cleanup}.`}$('cfgDerivation').textContent=d.tree?treeProductions(d.tree).join('\n'):'No derivation.';$('cfgTreeView').textContent=d.tree?treeText(d.tree):'No parse tree: the cart category sequence is not generated by the current CFG.'}
+function renderCfgAnalysis(){
+  const d=state.combo||(state.cart.length?null:state.lastCombo);
+  $('cfgNormalizedView').textContent=d?.normalized_grammar||'Normalized grammar appears after the cart is parsed.';
+  if(!state.cart.length&&!d){
+    $('cfgResult').textContent='Add products to the cart. Their category sequence becomes the CFG input string.';
+    $('cfgDerivation').textContent='Derivation will appear here.';
+    $('cfgTreeView').textContent='Parse tree will appear here.';
+    return;
+  }
+  if(!d){
+    $('cfgResult').textContent='Checking the cart category sequence with CYK…';
+    $('cfgDerivation').textContent='Derivation will appear after CYK finishes.';
+    $('cfgTreeView').textContent='Parse tree will appear here.';
+    return;
+  }
+  const sequence=d.category_sequence?d.category_sequence.join(' '):'';
+  const cleanup=d.normalization_steps?d.normalization_steps.join(' → '):'';
+  const prefix=state.cart.length?'':'Last checkout · ';
+  if(d.ambiguous){
+    $('cfgResult').textContent=`${prefix}Input: ${sequence}. CYK detected ambiguous derivations with discount options: ${Object.entries(d.discount_options||{}).map(([k,v])=>`${k}: ${v}%`).join(', ')}. Policy "best-discount" applied: ${d.discount_percent}% off ₹${d.gross_total} = save ₹${d.discount_amount}. ${cleanup}.`;
+  } else if(d.matched){
+    $('cfgResult').textContent=`${prefix}Input: ${sequence}. CYK accepted it: ${d.discount_percent}% off ₹${d.gross_total} = save ₹${d.discount_amount}; customer pays ₹${d.total}. ${d.parse_count} parse(s). ${cleanup}.`;
+  } else {
+    $('cfgResult').textContent=`${prefix}Input: ${sequence}. CYK found no derivation, so no combo discount applies. ${cleanup}.`;
+  }
+  const derivText = (d.derivation && d.derivation.length) ? d.derivation.join('\n⇒ ') : (d.tree ? treeProductions(d.tree).join('\n') : 'No derivation.');
+  $('cfgDerivation').textContent = derivText;
+  $('cfgTreeView').textContent = d.tree ? treeText(d.tree) : 'No parse tree: the cart category sequence is not generated by the current CFG.';
+}
 async function refreshCombo(){if(!state.cart.length)return;const requestId=++state.comboRequest;const key=JSON.stringify(state.cart.map(row=>[row.slot,row.quantity]));try{const d=await api('/api/combo-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cart:state.cart})});if(requestId!==state.comboRequest||key!==JSON.stringify(state.cart.map(row=>[row.slot,row.quantity])))return;state.combo=d;if(state.coins.length){state.balance=0;state.coins=[];state.machineState='ACCEPTING';trace('Payment','Cart total changed after CFG deal check. Please insert payment again.')}update()}catch(error){if(requestId===state.comboRequest){state.combo=null;$('cfgResult').textContent=`Combo preview unavailable: ${error.message}`;$('cfgTreeView').textContent='';renderCart()}}}
 function syncCombo(){const key=JSON.stringify(state.cart.map(row=>[row.slot,row.quantity]));if(key===state.comboKey)return;state.comboKey=key;state.combo=null;if(state.cart.length){state.lastCombo=null;renderCart();refreshCombo()}else{state.comboRequest++;renderCfgAnalysis()}}
 async function purchase(){if(!state.cart.length){trace('Cart','Add at least one item before checkout.');return}if(!state.combo){trace('CFG','Wait for the combo grammar check to finish before checkout.');return}try{const d=await api('/api/cart-purchase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cart:state.cart,coins:state.coins})});state.items=state.items.map(x=>{const u=d.items.find(i=>i.slot===x.slot);return u||x});state.sets=(await api('/api/sets-relations')).sets;renderSets();$('receiptBody').textContent=d.receipt.join('\n')+`\nCHANGE NOTES: ${d.change_breakdown.length?d.change_breakdown.map(x=>'₹'+x).join(', '):'None'}`;if(d.discount_amount)trace('CFG Combo',`CYK accepted ${d.combo.category_sequence.join(' ')} · ${d.combo.discount_percent}% discount = ₹${d.discount_amount} saved.`);trace('Logic',`P ∧ Q = ${d.logic.P_AND_Q} · change = ₹${d.change}`);if(d.fsm.length){const r=d.fsm.at(-1);trace('FSM',`Moore: ${r.moore_state} · Mealy: ${r.mealy_state}`)}trace('Dispense',d.message);if(d.low_stock)trace('Alert','One or more cart items are low in stock.');state.selected=null;state.lastCombo=d.combo;state.cart=[];state.combo=null;state.comboKey='[]';state.balance=0;state.coins=[];state.machineState='WAITING';update();setFsm([])}catch(e){trace('Logic',e.message)}}

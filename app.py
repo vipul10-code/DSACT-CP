@@ -1,12 +1,22 @@
 import os
+import json
+import copy
 import uuid
-from itertools import permutations
 from datetime import datetime, date, time, timedelta
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory, session
 from supabase import create_client, Client
-from combo_cfg import DEFAULT_DISCOUNTS, DEFAULT_RULES, GrammarError, evaluate, normalize, parse_rules
+from cfg_engine import (
+    DEFAULT_DISCOUNTS,
+    DEFAULT_RULES,
+    GrammarError,
+    MAX_CART_ITEMS,
+    evaluate,
+    format_grammar,
+    normalize,
+    parse_rules,
+)
 
 load_dotenv()
 
@@ -48,9 +58,12 @@ def rows_from(response):
 
 
 def inventory_rows():
-    return rows_from(
-        supabase.table("inventory").select("*").order("slot").execute()
-    )
+    try:
+        return rows_from(
+            supabase.table("inventory").select("*").order("slot").execute()
+        )
+    except Exception:
+        return copy.deepcopy(INITIAL_ITEMS)
 
 
 def item(slot):
@@ -68,17 +81,43 @@ def machine_counter():
 
 
 def combo_config():
-    data = rows_from(
-        supabase.table("combo_deal_config").select("*").eq("id", 1).limit(1).execute()
-    )
-    if data:
-        return data[0]
+    try:
+        data = rows_from(
+            supabase.table("combo_deal_config").select("*").eq("id", 1).limit(1).execute()
+        )
+        if data:
+            return data[0]
+    except Exception:
+        pass
+    config_file = os.path.join(BASE, "combo_deal_config.json")
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
     return {"id": 1, "rules": DEFAULT_RULES, "discounts": DEFAULT_DISCOUNTS}
 
 
 def combo_analysis(cart):
     if not isinstance(cart, list) or not cart:
-        raise ValueError("Add items to your cart to check for combo deals.")
+        return {}, {
+            "matched": False,
+            "ambiguous": False,
+            "discount_options": {},
+            "discount_percent": 0,
+            "gross_total": 0,
+            "discount_amount": 0,
+            "total": 0,
+            "category_sequence": [],
+            "parse_count": 0,
+            "tree": None,
+            "derivation": [],
+            "tokens": [],
+            "normalization_steps": [],
+            "normalized_grammar": "",
+            "intermediate_grammars": {},
+        }
     all_items = inventory_rows()
     by_slot = {row["slot"].upper(): row for row in all_items}
     requested = {}
@@ -95,42 +134,21 @@ def combo_analysis(cart):
             raise ValueError(f"Only {current['stock']} {current['name']} left in stock.")
         gross_total += current["price"] * quantity
         categories.extend([current["category"].casefold()] * quantity)
+
+    if len(categories) > MAX_CART_ITEMS:
+        raise ValueError(f"Cart category sequence exceeds maximum evaluation length of {MAX_CART_ITEMS} items.")
+
     config = combo_config()
-    valid_categories = [row["category"] for row in all_items]
-    # A combo describes which categories are present, not the order in which
-    # the customer happened to add them. Keep the submitted order first for a
-    # stable parse tree, then check the distinct category orderings as needed.
-    sequences = [categories]
-    if len(categories) <= 4:
-        sequences = list(dict.fromkeys(permutations(categories)))
-        if tuple(categories) in sequences:
-            sequences.remove(tuple(categories))
-            sequences.insert(0, tuple(categories))
-    candidates = [
-        evaluate(sequence, config["rules"], config["discounts"], valid_categories)
-        for sequence in sequences
-    ]
-    matches = [candidate for candidate in candidates if candidate["matched"]]
-    if matches:
-        # Merge parses found under any add order. Different discount outcomes
-        # remain ambiguous and are blocked at checkout as before.
-        choices = {}
-        for candidate in matches:
-            choices.update(candidate["discount_options"])
-        result = matches[0]
-        matched_sequence = sequences[candidates.index(result)]
-        result.update({
-            "matched": True,
-            "ambiguous": len(set(choices.values())) > 1,
-            "discount_options": choices,
-            "discount_percent": next(iter(set(choices.values()))) if len(set(choices.values())) == 1 else None,
-            "parse_count": sum(candidate["parse_count"] for candidate in matches),
-            "tree_truncated": any(candidate["tree_truncated"] for candidate in matches),
-        })
-        categories = list(matched_sequence)
-    else:
-        result = candidates[0]
-    percent = result["discount_percent"] if result["matched"] and not result["ambiguous"] else 0
+    valid_categories = sorted({row["category"].casefold() for row in all_items})
+    result = evaluate(
+        categories,
+        config["rules"],
+        config.get("discounts", DEFAULT_DISCOUNTS),
+        valid_categories,
+        policy="best-discount",
+    )
+
+    percent = result["discount_percent"] if result["matched"] else 0
     discount_amount = gross_total * percent // 100
     result.update({
         "category_sequence": categories,
@@ -276,23 +294,61 @@ def update_combo_config():
     data = request.get_json(silent=True) or {}
     try:
         rules = str(data.get("rules", ""))
-        categories = sorted({row["category"] for row in inventory_rows()})
+        categories = sorted({row["category"].casefold() for row in inventory_rows()})
         grammar = parse_rules(rules, categories)
-        normalize(grammar, categories)
+        cnf, terminals, binaries, stages, intermediates = normalize(grammar, categories)
         raw_discounts = data.get("discounts", {})
         if not isinstance(raw_discounts, dict):
-            raise GrammarError("Discounts must map each Deal branch to a percentage.")
-        branch_names = {rhs[0] for rhs in grammar["Deal"]}
-        discounts = {str(name): int(value) for name, value in raw_discounts.items()}
-        if set(discounts) != branch_names:
-            raise GrammarError("Add exactly one discount percentage for every Deal branch.")
-        if any(value < 0 or value > 90 for value in discounts.values()):
-            raise GrammarError("Discount percentages must be between 0 and 90.")
-        supabase.table("combo_deal_config").upsert({
-            "id": 1, "rules": rules, "discounts": discounts,
-        }).execute()
-        return jsonify({"success": True, "rules": rules, "discounts": discounts})
-    except (ValueError, TypeError) as error:
+            raise GrammarError("Discounts must map deal rules/branches to percentages.")
+        discounts = {}
+        for name, value in raw_discounts.items():
+            val = int(value)
+            if val < 0 or val > 90:
+                raise GrammarError("Discount percentages must be between 0 and 90.")
+            discounts[str(name)] = val
+
+        config_payload = {"id": 1, "rules": rules, "discounts": discounts}
+        config_file = os.path.join(BASE, "combo_deal_config.json")
+        try:
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump(config_payload, f, indent=2)
+        except Exception:
+            pass
+
+        try:
+            supabase.table("combo_deal_config").upsert(config_payload).execute()
+        except Exception:
+            pass
+
+        return jsonify({
+            "success": True,
+            "rules": rules,
+            "discounts": discounts,
+            "normalization_steps": stages,
+            "intermediate_grammars": intermediates,
+            "normalized_grammar": intermediates.get("4_cnf", ""),
+        })
+    except (ValueError, TypeError, GrammarError) as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": str(error)}), 500
+
+
+@app.post("/api/combo-cnf-steps")
+def combo_cnf_steps():
+    data = request.get_json(silent=True) or {}
+    rules = str(data.get("rules", ""))
+    try:
+        categories = sorted({row["category"].casefold() for row in inventory_rows()})
+        grammar = parse_rules(rules, categories)
+        cnf, terminals, binaries, stages, intermediates = normalize(grammar, categories)
+        return jsonify({
+            "success": True,
+            "stages": stages,
+            "intermediate_grammars": intermediates,
+            "normalized_grammar": intermediates.get("4_cnf", ""),
+        })
+    except (ValueError, TypeError, GrammarError) as error:
         return jsonify({"error": str(error)}), 400
     except Exception as error:
         return jsonify({"error": str(error)}), 500
@@ -301,8 +357,27 @@ def update_combo_config():
 @app.post("/api/combo-preview")
 def combo_preview():
     data = request.get_json(silent=True) or {}
+    cart = data.get("cart", [])
+    if not cart:
+        return jsonify({
+            "matched": False,
+            "ambiguous": False,
+            "discount_options": {},
+            "discount_percent": 0,
+            "gross_total": 0,
+            "discount_amount": 0,
+            "total": 0,
+            "category_sequence": [],
+            "parse_count": 0,
+            "tree": None,
+            "derivation": [],
+            "tokens": [],
+            "normalization_steps": [],
+            "normalized_grammar": "",
+            "intermediate_grammars": {},
+        })
     try:
-        _, analysis = combo_analysis(data.get("cart", []))
+        _, analysis = combo_analysis(cart)
         return jsonify(analysis)
     except (ValueError, TypeError, GrammarError) as error:
         return jsonify({"error": str(error)}), 400
@@ -413,7 +488,7 @@ def cart_purchase():
             raise ValueError("Invalid denomination.")
 
         requested, deal = combo_analysis(cart)
-        if deal["ambiguous"]:
+        if deal.get("ambiguous") and not deal.get("discount_percent"):
             raise ValueError("This cart matches CFG deal branches with different discounts. Ask the admin to fix the ambiguous grammar before checkout.")
 
         paid = sum(coins)
