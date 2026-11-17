@@ -1,3 +1,14 @@
+"""
+SmartVend - Python Flask Backend & Discrete Structures Engine.
+
+Demonstrates 5 core Discrete Mathematics & Computational Theory concepts:
+- Unit I: Propositional Logic (dispensing authorization P ∧ Q, low stock R).
+- Unit II: Sets & Binary Relations (slot -> item, item -> price, etc.).
+- Unit III: Moore vs Mealy Finite Automata (state transitions and edge outputs).
+- Unit IV: Greedy Combinatorial Change-Making (canonical denomination breakdown).
+- Unit V: Context-Free Grammar (CFG) Pricing Engine & CYK Dynamic Programming.
+"""
+
 import os
 import json
 import copy
@@ -40,6 +51,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 app = Flask(__name__, static_folder="frontend")
 app.secret_key = os.environ.get("SECRET_KEY", "smartvend-change-this-secret")
 
+# Initial catalog items used as fallback if Supabase is temporarily unreachable
 INITIAL_ITEMS = [
     {"slot": "A1", "name": "Water", "price": 20, "stock": 10, "category": "beverage", "icon": "💧"},
     {"slot": "A2", "name": "Juice", "price": 30, "stock": 8, "category": "beverage", "icon": "🧃"},
@@ -48,16 +60,21 @@ INITIAL_ITEMS = [
     {"slot": "B2", "name": "Cookies", "price": 15, "stock": 12, "category": "snack", "icon": "🍪"},
     {"slot": "B3", "name": "Chocolate", "price": 25, "stock": 7, "category": "snack", "icon": "🍫"},
 ]
+# Accepted coin denominations for payment
 DENOMINATIONS = [5, 10, 20, 50]
+# Canonical coin denominations for optimal greedy change return
 CHANGE_DENOMINATIONS = [50, 20, 10, 5, 2, 1]
+# Threshold below which an item triggers the low-stock warning predicate (R)
 LOW_STOCK_THRESHOLD = 2
 
 
 def rows_from(response):
+    """Safely extracts data list from a Supabase PostgREST response."""
     return response.data or []
 
 
 def inventory_rows():
+    """Fetches all inventory slots from Supabase, with offline fallback."""
     try:
         return rows_from(
             supabase.table("inventory").select("*").order("slot").execute()
@@ -67,6 +84,7 @@ def inventory_rows():
 
 
 def item(slot):
+    """Fetches a single inventory item by slot ID (e.g. 'A1')."""
     data = rows_from(
         supabase.table("inventory").select("*").eq("slot", slot.upper()).limit(1).execute()
     )
@@ -74,6 +92,7 @@ def item(slot):
 
 
 def machine_counter():
+    """Fetches the persistent daily collection count from Supabase."""
     data = rows_from(
         supabase.table("machine_counter").select("*").eq("id", 1).limit(1).execute()
     )
@@ -81,6 +100,7 @@ def machine_counter():
 
 
 def combo_config():
+    """Fetches CFG combo grammar and discount mappings from Supabase or local cache."""
     try:
         data = rows_from(
             supabase.table("combo_deal_config").select("*").eq("id", 1).limit(1).execute()
@@ -100,6 +120,17 @@ def combo_config():
 
 
 def combo_analysis(cart):
+    """
+    Evaluates a shopping cart against the CFG combo deals pricing engine.
+    
+    Concept: Context-Free Grammars & CYK Algorithm (Unit V).
+    Turns cart items into an ordered category sequence (e.g. ['snack', 'beverage']),
+    runs CYK parsing in Chomsky Normal Form, and computes the discount percentage.
+    If the sequence does not match the grammar, discount is 0 (pricing engine, not a validator).
+    
+    Input: cart list of dicts [{'slot': 'A1', 'quantity': 1}, ...].
+    Output: tuple of (requested_slots_dict, deal_analysis_dict).
+    """
     if not isinstance(cart, list) or not cart:
         return {}, {
             "matched": False,
@@ -140,6 +171,7 @@ def combo_analysis(cart):
 
     config = combo_config()
     valid_categories = sorted({row["category"].casefold() for row in all_items})
+    # Evaluate category sequence with CYK parser using Best-Discount policy
     result = evaluate(
         categories,
         config["rules"],
@@ -148,6 +180,7 @@ def combo_analysis(cart):
         policy="best-discount",
     )
 
+    # Compute monetary discount amount based on matched percentage
     percent = result["discount_percent"] if result["matched"] else 0
     discount_amount = gross_total * percent // 100
     result.update({
@@ -161,6 +194,15 @@ def combo_analysis(cart):
 
 
 def sets_relations():
+    """
+    Constructs mathematical sets and binary relations from live inventory.
+    
+    Concept: Sets & Binary Relations (Unit II).
+    - Sets: Slots, Item Names, Prices, Stock Values, Categories.
+    - Relations: Subsets of Cartesian products, e.g. Slot x Item, Item x Price.
+    
+    Output: dict with 'sets' and 'relations' keys.
+    """
     rows = inventory_rows()
     return {
         "sets": {
@@ -180,6 +222,16 @@ def sets_relations():
 
 
 def change_breakdown(amount):
+    """
+    Computes optimal change return using the Greedy Algorithm.
+    
+    Concept: Greedy Combinatorial Optimization & Canonical Coin Systems (Unit I/IV).
+    Because [50, 20, 10, 5, 2, 1] is canonical, greedy selection of the largest
+    possible denomination always yields the minimum total coin count.
+    
+    Input: amount (int, change owed in rupees).
+    Output: list of coin denominations (e.g. 48 -> [20, 20, 5, 2, 1]).
+    """
     result = []
     for d in CHANGE_DENOMINATIONS:
         while amount >= d:
@@ -191,6 +243,20 @@ def change_breakdown(amount):
 
 
 def fsm(coins, price):
+    """
+    Simulates Moore and Mealy Finite State Machines side-by-side.
+    
+    Concept: Finite Automata & Sequential Circuits (Unit III).
+    - States Q = {WAITING, ACCEPTING, READY}.
+    - Inputs Σ = {5, 10, 20, 50}.
+    - Outputs Δ = {WAIT, DISPENSE}.
+    - Moore Machine: Output depends strictly on current state (DISPENSE if state == READY).
+    - Mealy Machine: Output depends on state AND input transition edge (DISPENSE only on
+      the exact step balance crosses price threshold).
+    
+    Input: coins list (e.g. [10, 20]), price (int).
+    Output: list of trace row dicts showing step-by-step state and outputs.
+    """
     balance = 0
     rows = []
     moore = "WAITING"
@@ -218,6 +284,12 @@ def fsm(coins, price):
 
 
 def require_unlock(kind):
+    """
+    Access Control Guard: checks if the admin session has unlocked access.
+    
+    Input: kind ('inventory' or 'receipt').
+    Output: None if unlocked; JSON 403 response if locked.
+    """
     key = "inventory_unlocked" if kind == "inventory" else "receipt_unlocked"
     if not session.get(key, False):
         return jsonify({"error": f"{kind.title()} management is locked. Unlock it first."}), 403
@@ -225,6 +297,7 @@ def require_unlock(kind):
 
 
 def local_day_bounds():
+    """Calculates start and end timestamps for the current local calendar day."""
     now = datetime.now().astimezone()
     start = datetime.combine(now.date(), time.min, tzinfo=now.tzinfo)
     end = start + timedelta(days=1)
@@ -233,21 +306,29 @@ def local_day_bounds():
 
 @app.get("/")
 def index():
+    """Portal page: serves login.html with links to Customer and Admin views."""
     return send_from_directory("frontend", "login.html")
 
 
 @app.get("/customer")
 def customer():
+    """Customer vending page: serves index.html with interactive simulation."""
     return send_from_directory("frontend", "index.html")
 
 
 @app.get("/admin")
 def admin():
+    """Admin page: serves admin.html with inventory and CFG management tools."""
     return send_from_directory("frontend", "admin.html")
 
 
 @app.get("/api/health")
 def health():
+    """
+    Health check endpoint: verifies Flask server and Supabase connectivity.
+    
+    Output: JSON {"ok": true, "database": "Supabase PostgreSQL"} (200) or error (503).
+    """
     try:
         supabase.table("machine_counter").select("id").eq("id", 1).limit(1).execute()
         return jsonify({"ok": True, "database": "Supabase PostgreSQL"})
@@ -257,6 +338,11 @@ def health():
 
 @app.get("/api/inventory")
 def get_inventory():
+    """
+    Public inventory endpoint: returns all vending machine slots and stock.
+    
+    Output: JSON with items list, accepted denominations, and low stock threshold.
+    """
     return jsonify({
         "items": inventory_rows(),
         "accepted_denominations": DENOMINATIONS,
@@ -266,11 +352,22 @@ def get_inventory():
 
 @app.get("/api/sets-relations")
 def get_sets_relations():
+    """
+    Unit II Sets & Relations endpoint: returns sets and relation pairs.
+    
+    Output: JSON with 'sets' (slots, items, prices, stock, categories)
+            and 'relations' (slot_to_item, item_to_price, etc.).
+    """
     return jsonify(sets_relations())
 
 
 @app.get("/api/access-status")
 def access_status():
+    """
+    Session status endpoint: returns admin unlock state and receipt counter.
+    
+    Output: JSON with inventory_unlocked, receipt_unlocked, receipt_count.
+    """
     counter = machine_counter()
     return jsonify({
         "inventory_unlocked": bool(session.get("inventory_unlocked", False)),
@@ -282,12 +379,24 @@ def access_status():
 
 @app.get("/api/combo-config")
 def get_combo_config():
+    """
+    Unit V CFG endpoint: returns active grammar rules and discount mappings.
+    
+    Output: JSON with 'rules' (BNF string) and 'discounts' (dict).
+    """
     config = combo_config()
     return jsonify({"rules": config["rules"], "discounts": config["discounts"]})
 
 
 @app.post("/api/combo-config")
 def update_combo_config():
+    """
+    Admin CFG update endpoint (Protected): parses, normalizes, and saves new grammar.
+    
+    Concept: 4-stage CNF Normalization Pipeline (Unit V).
+    Input: JSON {"rules": "...", "discounts": {"rule": percent}}.
+    Output: JSON with success status, intermediate grammars, and CNF output.
+    """
     blocked = require_unlock("inventory")
     if blocked:
         return blocked
@@ -336,6 +445,12 @@ def update_combo_config():
 
 @app.post("/api/combo-cnf-steps")
 def combo_cnf_steps():
+    """
+    Unit V Verification endpoint: previews the 4-stage CNF normalization pipeline.
+    
+    Input: JSON {"rules": "..."}.
+    Output: JSON with stages list and intermediate grammars (0_orig, 1_eps, 2_unit, 3_useless, 4_cnf).
+    """
     data = request.get_json(silent=True) or {}
     rules = str(data.get("rules", ""))
     try:
@@ -356,6 +471,12 @@ def combo_cnf_steps():
 
 @app.post("/api/combo-preview")
 def combo_preview():
+    """
+    Customer combo preview endpoint: checks shopping cart with CYK parser.
+    
+    Input: JSON {"cart": [{"slot": "A1", "quantity": 1}, ...]}.
+    Output: JSON with matched (bool), discount_percent, discount_amount, tree, derivation.
+    """
     data = request.get_json(silent=True) or {}
     cart = data.get("cart", [])
     if not cart:
@@ -385,6 +506,12 @@ def combo_preview():
 
 @app.post("/api/unlock")
 def unlock():
+    """
+    Admin authentication endpoint: verifies admin password and unlocks session.
+    
+    Input: JSON {"password": "...", "target": "inventory"|"receipt"|"both"}.
+    Output: JSON with unlock flags (200) or error (401/400).
+    """
     data = request.get_json(silent=True) or {}
     password = str(data.get("password", ""))
     target = str(data.get("target", ""))
@@ -406,6 +533,7 @@ def unlock():
 
 @app.post("/api/lock")
 def lock():
+    """Admin sign-out endpoint: clears unlocked permissions from the Flask session."""
     session.pop("inventory_unlocked", None)
     session.pop("receipt_unlocked", None)
     return jsonify({"success": True})
@@ -413,6 +541,12 @@ def lock():
 
 @app.get("/api/compare")
 def compare():
+    """
+    Unit III FSM comparison endpoint: returns Moore and Mealy traces for given coins.
+    
+    Query Params: ?slot=A1&coins=10,20
+    Output: JSON {"rows": [fsm_step_1, fsm_step_2, ...]}.
+    """
     try:
         slot = request.args.get("slot", "").upper()
         coins = [int(x) for x in request.args.get("coins", "").split(",") if x]
@@ -428,7 +562,17 @@ def compare():
 
 @app.post("/api/purchase")
 def purchase():
-    # Kept for compatibility with the original SmartVend API.
+    """
+    Single-item purchase endpoint: calls PostgreSQL process_purchase stored procedure.
+    
+    Concepts:
+      - Unit I: Propositional logic predicates P, Q, P ∧ Q, and R.
+      - Unit III: Moore vs Mealy trace generation.
+      - Unit IV: Greedy change-making breakdown.
+    
+    Input: JSON {"slot": "A1", "coins": [20]}.
+    Output: JSON with dispensed item, change breakdown, logic truth values, FSM trace.
+    """
     data = request.get_json(silent=True) or {}
     slot = str(data.get("slot", "")).upper()
     coins = data.get("coins", [])
@@ -448,6 +592,7 @@ def purchase():
         updated = item(slot)
         change = payload["change"]
         notes = change_breakdown(change)
+        # Propositional logic authorization predicates
         logic = {
             "P": paid >= payload["price"],
             "Q": payload["stock_after"] >= 0,
@@ -477,6 +622,18 @@ def purchase():
 
 @app.post("/api/cart-purchase")
 def cart_purchase():
+    """
+    Multi-item cart purchase endpoint: applies CFG combo deals and dispenses items.
+    
+    Concepts:
+      - Unit V: CFG combo deal evaluation and discount calculation.
+      - Unit I: Propositional logic conditions across all cart items.
+      - Unit IV: Greedy change calculation on final discounted total.
+      - Supabase PostgreSQL atomic stored procedure `process_cart_purchase`.
+    
+    Input: JSON {"cart": [{"slot": "B1", "quantity": 1}, ...], "coins": [50]}.
+    Output: JSON with dispensed items, applied combo discount, change breakdown, receipt.
+    """
     data = request.get_json(silent=True) or {}
     cart = data.get("cart", [])
     coins = data.get("coins", [])
@@ -544,6 +701,12 @@ def cart_purchase():
 
 @app.post("/api/inventory/restock")
 def restock():
+    """
+    Admin Restock endpoint (Protected): adds units to an item's current stock.
+    
+    Input: JSON {"slot": "A1", "amount": 5}.
+    Output: JSON {"success": true, "item": updated_item}.
+    """
     blocked = require_unlock("inventory")
     if blocked:
         return blocked
@@ -566,6 +729,12 @@ def restock():
 
 @app.post("/api/inventory/set-stock")
 def set_stock():
+    """
+    Admin Set Stock endpoint (Protected): directly overwrites an item's stock count.
+    
+    Input: JSON {"slot": "A1", "stock": 10}.
+    Output: JSON {"success": true, "item": updated_item}.
+    """
     blocked = require_unlock("inventory")
     if blocked:
         return blocked
@@ -587,6 +756,11 @@ def set_stock():
 
 @app.get("/api/daily-sales")
 def daily_sales():
+    """
+    Admin Daily Sales endpoint (Protected): returns all transaction records for today.
+    
+    Output: JSON {"date": "YYYY-MM-DD", "sales": [...], "count": N}.
+    """
     blocked = require_unlock("receipt")
     if blocked:
         return blocked
@@ -607,6 +781,12 @@ def daily_sales():
 
 @app.post("/api/end-day")
 def end_day():
+    """
+    Admin End-of-Day endpoint (Protected): calls atomic collect_end_day stored procedure.
+    
+    Summarizes today's revenue, increments collection counter, archives sales, and returns receipt.
+    Output: JSON with receipt array, collection count, cash received, change returned.
+    """
     blocked = require_unlock("receipt")
     if blocked:
         return blocked
@@ -623,7 +803,12 @@ def end_day():
 
 @app.post("/api/reset")
 def reset():
-    # Kept as a development/demo function so no original functionality is removed.
+    """
+    Development/Demo Reset endpoint: restores initial 6 items and resets counters.
+    
+    Calls Supabase stored procedure `reset_machine()`.
+    Output: JSON {"success": true, "items": [...]}.
+    """
     try:
         result = supabase.rpc("reset_machine").execute()
         if not result.data or not result.data.get("success"):

@@ -1,6 +1,17 @@
 """
 CFG Normalization, CYK Parsing, Parse Tree Generation, and Derivation Engine
 for SmartVend Combo Deals (Unit V - Context-Free Grammars).
+
+This module implements:
+1. Context-Free Grammar (CFG) parsing in standard Backus-Naur Form (BNF).
+2. A 4-stage pipeline to convert any CFG to Chomsky Normal Form (CNF):
+   - Stage 1: Eliminate epsilon (empty) productions.
+   - Stage 2: Eliminate unit productions (A -> B).
+   - Stage 3: Eliminate useless symbols (non-generating and unreachable).
+   - Stage 4: Convert remaining rules to CNF (A -> BC or A -> a).
+3. The Cocke-Younger-Kasami (CYK) dynamic programming parsing algorithm.
+4. Parse tree unwrapping and step-by-step leftmost derivation generation.
+5. Ambiguity detection and Best-Discount resolution policy.
 """
 
 from collections import defaultdict
@@ -33,10 +44,19 @@ class GrammarError(ValueError):
 
 def parse_rules(source, categories=None):
     """
-    Parses CFG text in standard BNF format:
-      Nonterminal -> alternative | alternative ...
-    Empty production can be written as ε, epsilon, or EPSILON.
-    Returns: dict mapping LHS (str) -> list of RHS (tuple of str symbols).
+    Parses a CFG text written in Backus-Naur Form (BNF).
+    
+    Concept: Context-Free Grammar definition G = (V, Σ, R, S) (Unit V).
+    - V (Variables/Nonterminals): capital identifiers on the LHS, e.g. Deal, Combo.
+    - Σ (Terminals): product category tokens, e.g. snack, beverage.
+    - R (Rules): productions of the form Nonterminal -> alternative | alternative.
+    - S (Start Symbol): 'Deal'.
+    
+    Input:
+      source: str, multi-line grammar text.
+      categories: optional list of valid terminal names to validate against.
+    Output:
+      dict mapping each LHS symbol (str) to a list of RHS tuples (tuple of str).
     """
     if not isinstance(source, str) or not source.strip():
         raise GrammarError("Grammar text cannot be empty.")
@@ -103,8 +123,15 @@ def format_grammar(grammar):
 
 def eliminate_epsilon(grammar, start_symbol="Deal"):
     """
-    Step 1: Eliminate epsilon (empty) productions.
-    Returns: new_grammar, nullable_set
+    Stage 1 of CNF Normalization: Eliminate epsilon (empty, ε) productions.
+    
+    Concept: Nullable variables (Unit V).
+    A variable A is nullable if it can derive the empty string: A =>* ε.
+    For every rule containing nullable variables, we generate all subsets
+    with and without them, then discard the empty rule ε.
+    
+    Input: grammar dictionary, start symbol name.
+    Output: (new_grammar, nullable_set).
     """
     nullable = set()
     changed = True
@@ -143,8 +170,15 @@ def eliminate_epsilon(grammar, start_symbol="Deal"):
 
 def eliminate_unit(grammar, start_symbol="Deal"):
     """
-    Step 2: Eliminate unit productions A -> B where B is a nonterminal.
-    Returns: new_grammar
+    Stage 2 of CNF Normalization: Eliminate unit productions (A -> B).
+    
+    Concept: Unit Closure (Unit V).
+    A unit production has a single nonterminal on the right-hand side.
+    We compute the unit closure Unit(A) = {B in V | A =>* B}, then add all
+    non-unit productions of B directly to A and delete the unit rule.
+    
+    Input: grammar dictionary, start symbol name.
+    Output: (new_grammar, unit_closure_dict).
     """
     nonterminals = set(grammar.keys())
     unit_closure = {lhs: {lhs} for lhs in nonterminals}
@@ -181,10 +215,16 @@ def eliminate_unit(grammar, start_symbol="Deal"):
 
 def eliminate_useless(grammar, start_symbol="Deal", categories=None):
     """
-    Step 3: Eliminate useless symbols:
-      3a. Remove non-generating symbols (cannot derive terminal strings).
-      3b. Remove unreachable symbols (cannot be reached from start_symbol).
-    Returns: new_grammar
+    Stage 3 of CNF Normalization: Eliminate useless symbols.
+    
+    Concept: Generating and Reachable symbols (Unit V).
+    A symbol is useful only if it can derive a terminal string (generating)
+    AND can be reached starting from 'Deal' (reachable).
+    - 3a: Bottom-up search for generating symbols.
+    - 3b: Top-down graph reachability from start_symbol.
+    
+    Input: grammar dictionary, start symbol name, optional category terminals.
+    Output: new_grammar containing only useful symbols.
     """
     nonterminals = set(grammar.keys())
     if categories is not None:
@@ -245,11 +285,22 @@ def eliminate_useless(grammar, start_symbol="Deal", categories=None):
 
 def convert_to_cnf(grammar, start_symbol="Deal", categories=None):
     """
-    Step 4: Convert productions to Chomsky Normal Form (CNF):
-      A -> B C  (two nonterminals)
-      or
-      A -> a    (one terminal)
-    Returns: cnf_grammar, terminal_rules, binary_rules
+    Stage 4 of CNF Normalization: Convert all productions to Chomsky Normal Form.
+    
+    Concept: Chomsky Normal Form (CNF) (Unit V).
+    Every rule in CNF must strictly be in one of two formats:
+      1. A -> B C  (binary rule: exactly two nonterminals)
+      2. A -> a    (unary terminal rule: exactly one terminal)
+    
+    Transformations:
+      - Step 4a: Terminal isolation. Mixed rules (e.g. A -> snack B) get synthetic
+        terminal variables (T_snack -> snack, so A -> T_snack B).
+      - Step 4b: Binarization. Rules with length >= 3 are split into cascading
+        binary pairs using helper variables (BIN_...).
+      - Step 4c: Builds reverse lookup dictionaries for fast CYK parsing.
+    
+    Input: grammar dictionary, start symbol name, categories list.
+    Output: (cnf_grammar, terminal_rules, binary_rules).
     """
     nonterminals = set(grammar.keys())
     if categories is not None:
@@ -375,9 +426,21 @@ def normalize(grammar, categories=None, start_symbol="Deal"):
 
 def cyk_parse(tokens, terminal_rules, binary_rules, start_symbol="Deal", max_trees=MAX_TREES):
     """
-    CYK algorithm with full back-pointer storage for parse tree reconstruction.
-    Returns: list of parse trees rooted at start_symbol.
-    Each parse tree is represented as a tuple: (symbol, tuple_of_child_trees)
+    Cocke-Younger-Kasami (CYK) dynamic programming parsing algorithm.
+    
+    Concept: Tabular polynomial-time CFG membership recognition (Unit V).
+    Time Complexity: O(n^3 * |R|) where n is sequence length and |R| is rule count.
+    Space Complexity: O(n^2 * |V|) for the 2D triangular recognition table.
+    
+    How it works:
+      - Base case (length 1): chart[i][i] stores nonterminals that produce token[i].
+      - Inductive step (length 2 to n): for every split point k between i and j,
+        checks if nonterminal B in chart[i][k] and C in chart[k+1][j] form a rule A -> BC.
+      - If start_symbol ('Deal') appears in chart[0][n-1], the string is accepted!
+      - Stores child pointers to reconstruct all valid parse trees.
+    
+    Input: list of tokens, terminal_rules dict, binary_rules dict, start_symbol.
+    Output: list of parse tree tuples rooted at start_symbol.
     """
     n = len(tokens)
     if n == 0:
@@ -415,7 +478,15 @@ def cyk_parse(tokens, terminal_rules, binary_rules, start_symbol="Deal", max_tre
 
 def unwrap_cnf_tree(tree, original_grammar):
     """
-    Unwraps synthetic CNF helper symbols (T_a and BIN_...) back to original grammar shape.
+    Reconstructs the original grammar parse tree from a CNF parse tree.
+    
+    Concept: Inverting synthetic CNF binarization nodes (Unit V).
+    CYK operates on the CNF grammar with synthetic helper nodes like T_snack
+    and BIN_Deal. This function inlines the binarization helpers and unwraps
+    the terminal wrappers so the user sees their original BNF rules.
+    
+    Input: raw CNF parse tree tuple, original_grammar dict.
+    Output: clean parse tree tuple matching original grammar nonterminals.
     """
     sym, children = tree
     if not children:
@@ -439,7 +510,15 @@ def unwrap_cnf_tree(tree, original_grammar):
 
 def generate_leftmost_derivation(tree):
     """
-    Generates step-by-step strings of the leftmost derivation from the parse tree.
+    Generates the step-by-step leftmost derivation strings from a parse tree.
+    
+    Concept: Leftmost Derivation (Unit V).
+    In a leftmost derivation (S => ... => w), the leftmost nonterminal variable
+    in each sentential form is replaced first.
+    
+    Input: parse tree tuple (rooted at 'Deal').
+    Output: list of strings representing each intermediate sentential form
+            e.g. ['Deal', 'Combo', 'snack beverage'].
     """
     def get_frontier(nodes):
         res = []
@@ -529,15 +608,24 @@ def calculate_discount_for_tree(tree, discounts):
 def evaluate(sequence, source, discounts=None, categories=None, policy="best-discount"):
     """
     Evaluates a cart category sequence against the CFG combo rules.
-
-    Parameters:
-      sequence: list of str (e.g. ['snack', 'beverage'])
-      source: str grammar text
-      discounts: dict mapping rule/nonterminal names to int discount percentages
-      categories: list of valid product categories
-      policy: 'best-discount' (resolves ambiguity by picking highest discount)
-
-    Returns: dict containing parsing, discount, tree, and derivation results.
+    
+    Concepts Used (Unit V):
+      - Context-Free Grammar membership check via CYK algorithm.
+      - Grammar Ambiguity Detection: checks if multiple distinct parse trees exist
+        that produce conflicting discount percentages.
+      - Best-Discount Policy: when ambiguous, awards the highest discount rate
+        to the customer so checkout proceeds smoothly while reporting the ambiguity.
+    
+    Input:
+      sequence: list of str category tokens (e.g. ['snack', 'beverage']).
+      source: str, BNF grammar text.
+      discounts: dict mapping rule/nonterminal names to int discount percentages.
+      categories: list of catalogued categories.
+      policy: str, 'best-discount' (resolves ambiguity in customer's favor).
+    Output:
+      dict with keys: matched (bool), ambiguous (bool), discount_percent (int),
+      parse_count (int), tree (dict), derivation (list of str), normalization_steps (list),
+      intermediate_grammars (dict).
     """
     if discounts is None:
         discounts = DEFAULT_DISCOUNTS

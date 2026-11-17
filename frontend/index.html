@@ -47,7 +47,13 @@
 </div><script>
 const state={items:[],selected:null,balance:0,coins:[],machineState:'WAITING',sets:null,cart:[],combo:null,lastCombo:null,comboKey:'',comboRequest:0,comboRules:'',inventoryUnlocked:false,receiptUnlocked:false,receiptCount:0,lastReceiptDate:null};
 const $=id=>document.getElementById(id);
+// Helper for document.getElementById
+const $=id=>document.getElementById(id);
+
+// Generic API fetch wrapper that checks response.ok and throws errors with server message
 async function api(path,options){const r=await fetch(path,options);const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
+
+// Unit V: Renders promotional combo deal cards dynamically from active CFG rules
 function renderComboDeals(config){
   const categories=new Set(state.items.map(item=>item.category.toLowerCase()));
   const lines=config.rules.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
@@ -102,26 +108,62 @@ function renderComboDeals(config){
     host.append(card);
   });
 }
+
+// Appends step entries to the live execution trace box at the bottom of the page
 function trace(title,message){const el=$('trace'),step=document.createElement('div');step.className='trace-step active';step.innerHTML=`<strong>${title}</strong><small>${message}</small>`;el.prepend(step);while(el.children.length>6)el.lastChild.remove()}
+
+// Unit II: Formats and displays mathematical sets (Slots, Items, Categories)
 function renderSets(){const sets=state.sets;if(!sets){$('slotSet').textContent='{—}';$('itemSet').textContent='{—}';$('categorySet').textContent='{—}';return}const formatSet=values=>`{${values.join(', ')}}`;$('slotSet').textContent=formatSet(sets.slots);$('itemSet').textContent=formatSet(sets.item_names);$('categorySet').textContent=formatSet(sets.categories)}
+
+// Cart helpers: item count, subtotal, total (with combo discount), and item quantity
 function cartQty(slot){const row=state.cart.find(x=>x.slot===slot);return row?row.quantity:0}
 function cartSubtotal(){return state.cart.reduce((sum,x)=>sum+x.price*x.quantity,0)}
 function cartTotal(){return state.combo?.matched&&!state.combo.ambiguous?state.combo.total:cartSubtotal()}
 function cartCount(){return state.cart.reduce((sum,x)=>sum+x.quantity,0)}
+
+// Renders the 6-product vending machine catalog grid
 function renderProducts(){ $('productGrid').innerHTML=state.items.map(x=>`<button class="product ${state.selected?.slot===x.slot?'selected':''}" ${x.stock===0?'disabled':''} data-slot="${x.slot}"><div class="product-icon">${x.icon}</div><span class="slot">${x.slot}</span><h4>${x.name}</h4><span class="category">${x.category}</span><div class="product-bottom"><span class="product-price">₹${x.price}</span><span class="stock">${x.stock} left${cartQty(x.slot)?` · ${cartQty(x.slot)} in cart`:''}</span></div></button>`).join('');document.querySelectorAll('[data-slot]').forEach(b=>b.onclick=()=>selectProduct(b.dataset.slot));$('stockCounter').textContent=`${state.items.length} products`}
+
+// Selects a product for inspection and updates Unit II relations
 function selectProduct(slot){const item=state.items.find(x=>x.slot===slot);if(!item||!item.stock)return;state.selected=item;state.balance=0;state.coins=[];state.machineState='ACCEPTING';update();trace('Selection',`Relation: ${item.slot} → ${item.name} → ₹${item.price} → ${item.stock}`)}
+
+// Updates UI state indicators for Moore vs Mealy automata
 function setFsm(rows){if(!rows.length){$('mooreState').textContent='WAITING';$('mealyState').textContent='WAITING';$('mooreOutput').textContent='WAIT';$('mealyOutput').textContent='WAIT';return}const r=rows[rows.length-1];$('mooreState').textContent=r.moore_state;$('mealyState').textContent=r.mealy_state;$('mooreOutput').textContent=r.moore_output;$('mealyOutput').textContent=r.mealy_output}
+
+// Unit III: Calls GET /api/compare to simulate Moore vs Mealy state machines
 async function refreshFsm(){const total=cartTotal()||state.selected?.price||0;if(!total){setFsm([]);return}const q=state.coins.join(',');const slot=state.selected?.slot;if(slot&&!state.cart.length){const d=await api(`/api/compare?slot=${slot}&coins=${q}`);setFsm(d.rows)}else{const rows=[];let balance=0;state.coins.forEach(c=>{balance+=c;rows.push({moore_state:balance>=total?'READY':'ACCEPTING',moore_output:balance>=total?'DISPENSE':'WAIT',mealy_state:balance>=total?'READY':'ACCEPTING',mealy_output:balance>=total?'DISPENSE':'WAIT'})});setFsm(rows)}}
+
+// Handles coin insertion event (denominations: 5, 10, 20, 50)
 async function addCoin(coin){if(!state.selected&&!state.cart.length){trace('Payment','Select a product before inserting payment.');return}state.coins.push(coin);state.balance+=coin;state.machineState=state.balance>=(cartTotal()||state.selected.price)?'READY':'ACCEPTING';update();await refreshFsm();trace('Payment',`₹${coin} inserted · balance = ₹${state.balance}`)}
+
+// Unit I: Evaluates Boolean Propositional Logic predicates: P (paid >= total), Q (in stock), P ∧ Q, and R (low stock)
 function updateLogic(){const item=state.selected;if(!item&&!state.cart.length){$('logicLines').innerHTML='<div><span>P: balance ≥ price</span><b>—</b></div><div><span>Q: stock available</span><b>—</b></div><div><span>P ∧ Q</span><b>—</b></div><div><span>R: low stock</span><b>—</b></div>';return}const total=cartTotal()||item.price;const P=state.balance>=total;const Q=state.cart.length?state.cart.every(x=>{const inv=state.items.find(i=>i.slot===x.slot);return inv&&inv.stock>=x.quantity}):item.stock>0;const R=state.cart.length?state.cart.some(x=>{const inv=state.items.find(i=>i.slot===x.slot);return inv&&inv.stock-x.quantity<2}):item.stock-1<2;const vals=[['P: balance ≥ total',P],['Q: stock available',Q],['P ∧ Q',P&&Q],['R: low stock',R]];$('logicLines').innerHTML=vals.map(([t,v])=>`<div><span>${t}</span><b class="${v?'true':'false'}">${v}</b></div>`).join('')}
+
+// Renders the shopping cart items, quantities, subtotal, and CFG combo discount badge
 function renderCart(){const total=cartTotal();$('cartCount').textContent=cartCount();$('cartSummary').textContent=`${cartCount()} item${cartCount()===1?'':'s'}`;$('cartTotal').textContent=`₹${total}`;if(!state.cart.length){$('cartItems').innerHTML='<div class="cart-empty">Your cart is empty.</div>'}else{$('cartItems').innerHTML=state.cart.map(x=>`<div class="cart-item"><div><strong>${x.name}</strong><br><small>₹${x.price} each</small></div><div class="qty-controls"><button onclick="changeQty('${x.slot}',-1)">−</button><strong>${x.quantity}</strong><button onclick="changeQty('${x.slot}',1)">+</button></div><strong>₹${x.price*x.quantity}</strong></div>`).join('')};$('required').textContent=total?`₹${total}`:(state.selected?`₹${state.selected.price}`:'—');$('buyBtn').disabled=!(state.cart.length&&state.balance>=total);if(!state.cart.length){$('comboOffer').textContent='Add products to check whether your cart forms a CFG combo deal.'}else if(state.combo?.ambiguous){$('comboOffer').innerHTML=`<strong>CFG combo applied:</strong> ${state.combo.discount_percent}% off · save ₹${state.combo.discount_amount} <small style="display:block;color:#f4512b;">(Ambiguity resolved via best-discount policy: ${state.combo.parse_count} derivations detected)</small>`}else if(state.combo?.matched){$('comboOffer').innerHTML=`<strong>CFG combo applied:</strong> ${state.combo.discount_percent}% off · save ₹${state.combo.discount_amount}`}else{$('comboOffer').textContent='Checking category sequence against the combo grammar…'}}
+
+// Renders details of the currently selected product
 function renderSelected(){const item=state.selected;if(!item){$('selectedProduct').innerHTML='<div class="empty">Choose an item from the left</div>';$('addCartBtn').disabled=true;return}const qty=cartQty(item.slot);$('selectedProduct').innerHTML=`<div class="selected-main"><div><h4>${item.name}</h4><p>${item.slot} · ${item.category} · ${item.stock} in stock</p></div><div class="price">₹${item.price}</div></div><div class="receipt-meta">${qty} already in cart</div>`;$('addCartBtn').disabled=qty>=item.stock}
+
+// Central reactive refresh function: updates UI tiles, theory cards, and cart
 function update(){const item=state.selected;const total=cartTotal();$('machineState').textContent=state.machineState;$('displayBalance').textContent=`₹${state.balance}`;$('displayMessage').textContent=total?`Cart · ₹${total}`:(item?`${item.name} · ₹${item.price}`:'Select an item to begin');$('balance').textContent=`₹${state.balance}`;renderSelected();renderCart();$('relationView').innerHTML=item?`<b>Slot → Item</b><br>(${item.slot}, ${item.name})<br><b>Item → Price</b><br>(${item.name}, ₹${item.price})<br><b>Item → Stock</b><br>(${item.name}, ${item.stock})<br><b>Item → Category</b><br>(${item.name}, ${item.category})`:'Select a product to inspect its relations.';updateLogic();renderProducts();syncCombo();renderCfgAnalysis()}
+
+// Adds the currently selected product to the shopping cart
 function addSelectedToCart(){if(!state.selected)return;const item=state.selected;const existing=state.cart.find(x=>x.slot===item.slot);if(existing){if(existing.quantity>=item.stock){trace('Cart','No more stock available for this item.');return}existing.quantity++}else state.cart.push({slot:item.slot,name:item.name,price:item.price,quantity:1});state.balance=0;state.coins=[];state.machineState='ACCEPTING';update();trace('Cart',`${item.name} added to cart.`)}
+
+// Adjusts the quantity of an item in the cart (+1 or -1)
 function changeQty(slot,delta){const row=state.cart.find(x=>x.slot===slot);const inv=state.items.find(x=>x.slot===slot);if(!row||!inv)return;const next=row.quantity+delta;if(next<=0)state.cart=state.cart.filter(x=>x.slot!==slot);else if(next<=inv.stock)row.quantity=next;else{trace('Cart',`Only ${inv.stock} ${inv.name} available.`);return}state.balance=0;state.coins=[];state.machineState=state.cart.length?'ACCEPTING':'WAITING';update();refreshFsm().catch(()=>{})}
+
+// Empties the cart and resets balance and state to WAITING
 function clearCart(){state.cart=[];state.combo=null;state.lastCombo=null;state.balance=0;state.coins=[];state.machineState='WAITING';update();setFsm([]);trace('Cart','Cart cleared.')}
+
+// Formats a CFG parse tree node as an indented hierarchical text tree
 function treeText(node,depth=0){if(!node)return'No parse tree: the category sequence is not generated by the current CFG.';return`${'  '.repeat(depth)}${node.symbol}${node.children.length?'\n'+node.children.map(child=>treeText(child,depth+1)).join('\n'):''}`}
+
+// Extracts production rules used in the parse tree
 function treeProductions(node,rows=[]){if(node.children.length){rows.push(`${node.symbol} → ${node.children.map(child=>child.symbol).join(' ')}`);node.children.forEach(child=>treeProductions(child,rows))}return rows}
+
+// Unit V: Displays CYK parse results, CNF normalized grammar, parse tree, and leftmost derivation
 function renderCfgAnalysis(){
   const d=state.combo||(state.cart.length?null:state.lastCombo);
   $('cfgNormalizedView').textContent=d?.normalized_grammar||'Normalized grammar appears after the cart is parsed.';
@@ -151,10 +193,20 @@ function renderCfgAnalysis(){
   $('cfgDerivation').textContent = derivText;
   $('cfgTreeView').textContent = d.tree ? treeText(d.tree) : 'No parse tree: the cart category sequence is not generated by the current CFG.';
 }
+
+// Calls POST /api/combo-preview to evaluate the current cart with the CYK parser
 async function refreshCombo(){if(!state.cart.length)return;const requestId=++state.comboRequest;const key=JSON.stringify(state.cart.map(row=>[row.slot,row.quantity]));try{const d=await api('/api/combo-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cart:state.cart})});if(requestId!==state.comboRequest||key!==JSON.stringify(state.cart.map(row=>[row.slot,row.quantity])))return;state.combo=d;if(state.coins.length){state.balance=0;state.coins=[];state.machineState='ACCEPTING';trace('Payment','Cart total changed after CFG deal check. Please insert payment again.')}update()}catch(error){if(requestId===state.comboRequest){state.combo=null;$('cfgResult').textContent=`Combo preview unavailable: ${error.message}`;$('cfgTreeView').textContent='';renderCart()}}}
+
+// Debounces and triggers combo preview when cart item configuration changes
 function syncCombo(){const key=JSON.stringify(state.cart.map(row=>[row.slot,row.quantity]));if(key===state.comboKey)return;state.comboKey=key;state.combo=null;if(state.cart.length){state.lastCombo=null;renderCart();refreshCombo()}else{state.comboRequest++;renderCfgAnalysis()}}
+
+// Calls POST /api/cart-purchase to dispense cart items and calculate change
 async function purchase(){if(!state.cart.length){trace('Cart','Add at least one item before checkout.');return}if(!state.combo){trace('CFG','Wait for the combo grammar check to finish before checkout.');return}try{const d=await api('/api/cart-purchase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cart:state.cart,coins:state.coins})});state.items=state.items.map(x=>{const u=d.items.find(i=>i.slot===x.slot);return u||x});state.sets=(await api('/api/sets-relations')).sets;renderSets();$('receiptBody').textContent=d.receipt.join('\n')+`\nCHANGE NOTES: ${d.change_breakdown.length?d.change_breakdown.map(x=>'₹'+x).join(', '):'None'}`;if(d.discount_amount)trace('CFG Combo',`CYK accepted ${d.combo.category_sequence.join(' ')} · ${d.combo.discount_percent}% discount = ₹${d.discount_amount} saved.`);trace('Logic',`P ∧ Q = ${d.logic.P_AND_Q} · change = ₹${d.change}`);if(d.fsm.length){const r=d.fsm.at(-1);trace('FSM',`Moore: ${r.moore_state} · Mealy: ${r.mealy_state}`)}trace('Dispense',d.message);if(d.low_stock)trace('Alert','One or more cart items are low in stock.');state.selected=null;state.lastCombo=d.combo;state.cart=[];state.combo=null;state.comboKey='[]';state.balance=0;state.coins=[];state.machineState='WAITING';update();setFsm([])}catch(e){trace('Logic',e.message)}}
+
+// Calls POST /api/reset to reset inventory stock and counters for testing
 async function reset(){await api('/api/reset',{method:'POST'});state.items=(await api('/api/inventory')).items;state.sets=(await api('/api/sets-relations')).sets;renderSets();state.selected=null;state.cart=[];state.lastCombo=null;state.combo=null;state.balance=0;state.coins=[];state.machineState='WAITING';$('receiptBody').textContent='No completed transaction.';update();setFsm([]);$('trace').innerHTML='';trace('Reset','Machine returned to WAITING state.')}
+
+// Initializes application state on page load: fetches inventory, relations, and combo rules
 async function init(){state.items=(await api('/api/inventory')).items;const relationData=await api('/api/sets-relations');state.sets=relationData.sets;try{const cfg=await api('/api/combo-config');state.comboRules=cfg.rules;$('cfgRulesView').textContent=cfg.rules;renderComboDeals(cfg)}catch(error){$('cfgRulesView').textContent=`Combo grammar unavailable: ${error.message}`;$('comboDeals').innerHTML=`<div class="deal-card deal-loading">Combo deals could not be loaded: ${error.message}</div>`}renderSets();renderProducts();update();trace('System','SmartVend initialized and ready.')}
 document.querySelectorAll('[data-coin]').forEach(b=>b.onclick=()=>addCoin(Number(b.dataset.coin)));$('buyBtn').onclick=purchase;$('resetBtn').onclick=reset;$('addCartBtn').onclick=addSelectedToCart;$('clearCartBtn').onclick=clearCart;$('cartBtn').onclick=()=>{$('cartPanel').scrollIntoView({behavior:'smooth',block:'nearest'})};init().catch(e=>trace('System',e.message));
 </script>

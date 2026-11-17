@@ -13,8 +13,16 @@
 <section class="cfg-admin"><div class="eyebrow">UNIT V · CFG COMBO DEALS</div><h2>Edit combo grammar</h2><p class="cfg-help">Write one rule per line using <code>Nonterminal -&gt; alternative | alternative</code>. Categories are terminals (currently snack and beverage). The start symbol is <code>Deal</code>. Set a 0–90% discount for combo patterns and deal branches. Normalization automatically removes ε-productions, unit productions, useless symbols, and converts to CNF.</p><textarea id="grammarRules" spellcheck="false"></textarea><div id="discountFields" class="discount-grid"></div><div style="display:flex;gap:8px;margin-top:10px;"><button class="btn" id="saveGrammarBtn">Save CFG deals</button><button class="btn secondary" id="previewCnfBtn">Preview CNF steps</button></div><div id="grammarFeedback" class="cfg-help" style="margin-top:8px"></div><div id="cnfStepsContainer" class="hidden" style="margin-top:14px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:14px;"><h3 style="margin-top:0;">CFG Normalization Pipeline (Steps a–d)</h3><div id="cnfStages" class="muted" style="margin-bottom:10px;font-weight:bold;font-size:12px;"></div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;"><div><strong>0. Original Grammar</strong><pre id="stepOrig" style="margin-top:4px;padding:8px;font-size:11px;max-height:160px;overflow:auto;"></pre></div><div><strong>1. Eliminate ε-Productions</strong><pre id="stepEps" style="margin-top:4px;padding:8px;font-size:11px;max-height:160px;overflow:auto;"></pre></div><div><strong>2. Eliminate Unit Productions</strong><pre id="stepUnit" style="margin-top:4px;padding:8px;font-size:11px;max-height:160px;overflow:auto;"></pre></div><div><strong>3. Eliminate Useless Symbols</strong><pre id="stepUseless" style="margin-top:4px;padding:8px;font-size:11px;max-height:160px;overflow:auto;"></pre></div><div><strong>4. Chomsky Normal Form (CNF)</strong><pre id="stepCnf" style="margin-top:4px;padding:8px;font-size:11px;max-height:160px;overflow:auto;"></pre></div></div></div></section>
 <hr style="border:0;border-top:1px solid var(--line);margin:20px 0"><div class="admin-top"><div><strong>Daily receipt collection</strong><div id="collectionInfo" class="muted"></div></div></div><div class="day-actions"><button class="btn" id="endDayBtn">Generate receipt & clear today's sales</button><button class="btn secondary" id="salesBtn">View today's sales</button></div><div id="feedback" class="muted" style="margin-top:12px"></div><pre id="receipt" class="hidden"></pre><div id="sales"></div></div></section></main>
 <script>
-const $=id=>document.getElementById(id);async function api(path,options){const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');return data}
+// Helper for document.getElementById
+const $=id=>document.getElementById(id);
+
+// Generic API fetch wrapper that checks response.ok and throws errors with server message
+async function api(path,options){const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');return data}
+
+// Displays error feedback in the admin panel
 function showError(message){$('error').textContent=message;$('feedback').textContent=message}
+
+// Parses the grammar textarea to find all discountable Deal and Combo branches
 function grammarBranches(){
   const rules = $('grammarRules').value.split(/\r?\n/);
   const targets = new Set();
@@ -37,12 +45,18 @@ function grammarBranches(){
   if(targets.size === 0) targets.add('Combo');
   return Array.from(targets);
 }
+
+// Renders discount percentage input fields (0–90%) for each discovered grammar branch
 function renderDiscountInputs(discounts={}){
   $('discountFields').innerHTML = grammarBranches().map(branch =>
     `<label class="discount-field">${branch} discount (%)<input type="number" min="0" max="90" value="${discounts[branch]??10}" data-discount="${branch}"></label>`
   ).join('') || '<span class="cfg-help">Add Deal → BranchName to define a discounted deal.</span>';
 }
+
+// Reads user-entered discount values from all data-discount input elements
 function currentDiscounts(){return Object.fromEntries([...document.querySelectorAll('[data-discount]')].map(input=>[input.dataset.discount,Number(input.value)]))}
+
+// Populates the 4-stage CNF pipeline boxes: original, ε-free, unit-free, useless-free, and CNF
 function renderCnfSteps(stages=[], intermediates={}){
   const container = $('cnfStepsContainer');
   if(!container) return;
@@ -54,6 +68,8 @@ function renderCnfSteps(stages=[], intermediates={}){
   $('stepUseless').textContent = intermediates['3_no_useless'] || 'None';
   $('stepCnf').textContent = intermediates['4_cnf'] || 'None';
 }
+
+// Calls POST /api/combo-cnf-steps to test and preview the 4-stage CNF normalization
 async function previewCnf(){
   try{
     $('grammarFeedback').textContent = 'Normalizing grammar to CNF...';
@@ -69,6 +85,8 @@ async function previewCnf(){
     $('cnfStepsContainer').classList.add('hidden');
   }
 }
+
+// Calls POST /api/combo-config to save CFG grammar and discount percentages to Supabase
 async function saveGrammar(){
   try{
     $('grammarFeedback').textContent = 'Saving CFG deals...';
@@ -86,12 +104,26 @@ async function saveGrammar(){
     $('grammarFeedback').textContent = 'Error: ' + error.message;
   }
 }
+
+// Renders the list of inventory products with stock edit inputs and save buttons
 function renderInventory(items){$('inventory').innerHTML=items.map(item=>`<div class="admin-row"><strong>${item.slot}</strong><span>${item.name}<br><small>${item.stock} in stock</small></span><input class="stock-input" type="number" min="0" value="${item.stock}" id="stock-${item.slot}"><button class="btn" data-save="${item.slot}">Save</button></div>`).join('');document.querySelectorAll('[data-save]').forEach(button=>button.onclick=()=>saveStock(button.dataset.save))}
+
+// Loads initial admin state: calls GET /api/inventory, /api/access-status, and /api/combo-config
 async function loadAdmin(){try{const [items,status,config]=await Promise.all([api('/api/inventory'),api('/api/access-status'),api('/api/combo-config')]);if(!status.inventory_unlocked||!status.receipt_unlocked){$('login').classList.remove('hidden');$('controls').classList.add('hidden');$('badge').textContent='SIGNED OUT';return}$('login').classList.add('hidden');$('controls').classList.remove('hidden');$('badge').textContent='SIGNED IN';renderInventory(items.items);$('grammarRules').value=config.rules;renderDiscountInputs(config.discounts);$('collectionInfo').textContent=`Collection #${status.receipt_count} · ${status.last_receipt_date?'Last collection: '+status.last_receipt_date:'No previous collection'}`}catch(error){showError(error.message)}}
+
+// Calls POST /api/unlock with password to unlock admin permissions in session
 async function signIn(){try{await api('/api/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('password').value,target:'both'})});$('password').value='';$('error').textContent='';await loadAdmin()}catch(error){showError(error.message)}}
+
+// Calls POST /api/inventory/set-stock to update inventory stock count in Supabase
 async function saveStock(slot){try{const stock=Number($(`stock-${slot}`).value);await api('/api/inventory/set-stock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot,stock})});$('feedback').textContent=`${slot} stock saved.`;await loadAdmin()}catch(error){showError(error.message)}}
+
+// Calls POST /api/lock to sign out and clear session permissions
 async function signOut(){try{await api('/api/lock',{method:'POST'});$('feedback').textContent='Signed out.';await loadAdmin()}catch(error){showError(error.message)}}
+
+// Calls POST /api/end-day to issue receipt, increment counter, and clear today's sales
 async function endDay(){try{const data=await api('/api/end-day',{method:'POST'});$('receipt').textContent=data.receipt.join('\n');$('receipt').classList.remove('hidden');$('feedback').textContent=`Receipt #${data.receipt_count} issued. ${data.transactions} transaction(s) collected.`;await loadAdmin()}catch(error){showError(error.message)}}
+
+// Calls GET /api/daily-sales to display today's sales audit table
 async function showSales(){try{const data=await api('/api/daily-sales');$('sales').innerHTML=data.sales.length?`<table class="sales"><tr><th>Time</th><th>Item</th><th>Price</th><th>Deal discount</th><th>Paid</th><th>Change</th></tr>${data.sales.map(row=>`<tr><td>${row.sale_time}</td><td>${row.item_name}</td><td>₹${row.price}</td><td>${row.discount_amount?'₹'+row.discount_amount:'—'}</td><td>₹${row.paid}</td><td>₹${row.change_amount}</td></tr>`).join('')}</table>`:'<p class="muted">No sales stored for today.</p>'}catch(error){showError(error.message)}}
 $('loginBtn').onclick=signIn;$('password').onkeydown=event=>{if(event.key==='Enter')signIn()};$('logoutBtn').onclick=signOut;$('endDayBtn').onclick=endDay;$('salesBtn').onclick=showSales;$('grammarRules').oninput=()=>renderDiscountInputs(currentDiscounts());$('saveGrammarBtn').onclick=saveGrammar;$('previewCnfBtn').onclick=previewCnf;loadAdmin();
 </script></body></html>

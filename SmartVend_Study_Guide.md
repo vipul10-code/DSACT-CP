@@ -880,7 +880,7 @@ READY         | Dispense / Reset      | WAITING    | WAIT  | WAIT
 5. KEY DEMO NUMBERS & VALUES
 • Products: 6 (A1: Water ₹20, A2: Juice ₹30, A3: Soda ₹25, B1: Chips ₹20, B2: Cookies ₹15, B3: Chocolate ₹25).
 • Denominations: 5, 10, 20, 50.
-• Admin Password: deshpande
+• Admin Password: <configured in .env>
 • Test URL: http://127.0.0.1:8001/
 
 ```
@@ -940,7 +940,7 @@ READY         | Dispense / Reset      | WAITING    | WAIT  | WAIT
    - Customer Portal: `http://127.0.0.1:8001/customer`
    - Landing Page: `http://127.0.0.1:8001/`
    - Admin Dashboard: `http://127.0.0.1:8001/admin`
-3. **Admin Credentials:** `deshpande`
+3. **Admin Credentials:** `<configured in .env>`
 4. **Emergency Recovery if Internet Fails:**
    - Supabase requires an active internet connection. If the campus Wi-Fi disconnects, connect your laptop to mobile hotspot immediately.
    - The discrete math logic (FSM and change algorithm) runs purely in local Python memory and can be demonstrated directly in the Python terminal.

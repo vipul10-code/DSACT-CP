@@ -1,5 +1,8 @@
 """
-Backward-compatibility adapter for combo_cfg importing from cfg_engine.
+SmartVend - Combo CFG Backward-Compatibility Adapter.
+
+Re-exports pure CFG functions from cfg_engine.py for backwards compatibility
+with legacy test imports and modules. All core logic lives in cfg_engine.py.
 """
 
 from cfg_engine import (
