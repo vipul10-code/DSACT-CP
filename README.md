@@ -1,118 +1,90 @@
-# SmartVend v2 — Supabase Edition
+# SmartVend v2
 
-SmartVend is a Flask vending-machine simulator for a Discrete Mathematics and Computational Theory course project.
+SmartVend is a Flask vending machine simulator for a Discrete Mathematics and Computational Theory course project. It uses Supabase PostgreSQL for inventory, sales, and daily collection data.
 
-## Architecture
+## Pages
 
-```text
-INTERNET / LAN
-      |
-      v
-+------------------+
-| SmartVend Flask  |
-| website + logic  |
-+--------+---------+
-         |
-         v
-+------------------+
-| Supabase         |
-| PostgreSQL       |
-+------------------+
-   |       |       |
-   v       v       v
-inventory sales counters
-```
+- `/` — welcome page with **Enter as a Customer** and a smaller **Admin login** link.
+- `/customer` — customer vending interface. Customers can view products and purchase items; admin inventory and daily collection tools are not shown here.
+- `/admin` — admin sign-in and protected inventory and daily sales controls.
 
-The browser talks only to Flask. Flask talks to Supabase PostgreSQL. The privileged Supabase secret key is kept on the server and is never sent to the browser.
+Admin access uses the password configured by `SMARTVEND_ADMIN_PASSWORD`. It is stored in a Flask session after sign-in. The customer page does not require a customer account.
 
-## Preserved functionality
+## Features
 
-- Propositional Logic tile
-- Sets & Relations tile
-- Moore vs Mealy FSM tile
-- Product selection
-- Coin insertion
-- Change calculation
-- Shopping cart / multi-item checkout
-- Inventory display
-- Password-protected inventory management
-- Password-protected daily receipt collection
-- Daily sales table
-- End-of-day receipt
-- Delete current day's sales after collection
-- Persistent Collection #1, #2, #3... counter
-- Development/demo reset endpoint
+- Product selection, coin payment, change, cart, and checkout
+- Propositional Logic, Sets & Relations, and Moore vs Mealy FSM demonstrations
+- Protected inventory editing
+- Daily sales view and end-of-day receipt collection
+- Persistent receipt collection counter
 
-## 1. Create the Supabase database
+## Requirements
 
-1. Create a Supabase project.
-2. Open **SQL Editor**.
-3. Paste the entire contents of `schema.sql`.
-4. Run it.
-5. In Supabase Project Settings / API Keys, obtain:
-   - Project URL
-   - **Secret key** (`sb_secret_...`) for the Flask backend.
+- Python 3.10 or newer
+- A Supabase project
 
-Supabase recommends keeping secret/server keys on backend code only. Do not put the secret key in `frontend/index.html`.
+## Configure Supabase
 
-## 2. Local setup
+1. Create a Supabase project and open its **SQL Editor**.
+2. Run the contents of [`schema.sql`](schema.sql) to create the required tables and database functions.
+3. From your Supabase project settings, copy the project URL and a server-side secret key.
+
+The Supabase secret key must only be configured on the Flask server. Never place it in frontend files or commit it to GitHub.
+
+## Run locally
+
+In PowerShell from the project directory:
 
 ```powershell
 python -m venv venv
-.env\Scripts\Activate.ps1
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and fill in your real Supabase values.
+Set the required environment variables before starting the app. For local use, create a `.env` file in the project root:
 
-Then:
+```dotenv
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SECRET_KEY=your-supabase-secret-key
+SMARTVEND_ADMIN_PASSWORD=choose-a-strong-admin-password
+SECRET_KEY=use-a-long-random-value
+```
+
+Then start Flask:
 
 ```powershell
 python app.py
 ```
 
-Open:
+Open `http://127.0.0.1:8000/`. The customer and admin pages are available at `/customer` and `/admin`.
 
-```text
-http://127.0.0.1:8000
-```
+## Deploy to Render
 
-## 3. Online deployment
+1. Push the project to a GitHub repository. Keep `.env` and `venv/` out of the repository; both are excluded by [`.gitignore`](.gitignore).
+2. In Render, create a **New Web Service** and connect the GitHub repository.
+3. Select the Python runtime, then set:
 
-Set these environment variables in your hosting service:
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `gunicorn app:app`
 
-```text
-SUPABASE_URL=...
-SUPABASE_SECRET_KEY=...
-SMARTVEND_ADMIN_PASSWORD=...
-SECRET_KEY=...
-PORT=8000
-```
+4. In the Render service's **Environment** settings, add:
 
-Start command:
+   - `SUPABASE_URL` — Supabase project URL
+   - `SUPABASE_SECRET_KEY` — Supabase server-side secret key
+   - `SMARTVEND_ADMIN_PASSWORD` — a strong admin password
+   - `SECRET_KEY` — a long, random value used to sign Flask sessions
 
-```text
-gunicorn app:app
-```
+5. Deploy the service. Render provides the public URL. Use `/` for the welcome page, `/customer` for the vending interface, and `/admin` for admin sign-in.
 
-No SQLite database file is needed anymore. Your data lives in Supabase PostgreSQL.
+Render can deploy future commits automatically when auto-deploy is enabled. Otherwise, use **Manual Deploy → Deploy latest commit** in the Render dashboard.
 
-## Default demo password
+The existing `render.yaml` includes a legacy `DATABASE_PATH` setting that this Supabase version does not use. If deploying as a Render Blueprint instead of creating a Web Service in the dashboard, remove that setting and provide the four required environment variables above.
 
-```text
-1234
-```
+## Data and security notes
 
-Change it before public deployment.
-
-## Database behavior
-
-- `inventory` persists stock.
-- `sales` stores daily transaction rows.
-- `machine_counter` stores completed end-of-day collection count.
-- Cart checkout uses a PostgreSQL transaction function so stock updates and sales inserts happen together.
-- End-of-day collection summarizes and deletes that day's sales in one database transaction, then increments the collection counter.
-
-## Important
-
-Do not commit `.env` or paste your Supabase secret key into GitHub. `.env` is ignored by the included `.gitignore`.
+- Inventory stock is stored in the `inventory` table.
+- Sales are stored in the `sales` table until daily collection.
+- The `machine_counter` table tracks completed daily collections.
+- Cart checkout and end-of-day collection use PostgreSQL functions to perform related database changes transactionally.
+- The admin password defaults to `1234` only when `SMARTVEND_ADMIN_PASSWORD` is not set. Always set a strong value before public deployment.
+- Do not commit `.env`, Supabase secrets, or the local virtual environment.
