@@ -36,7 +36,7 @@ The schema also creates a default combo grammar and the discount column used by 
 
 ## Combo deals and Unit V CFG
 
-The customer cart turns its product categories into a token sequence and checks that sequence with the CYK algorithm. For example, a snack followed by a beverage is parsed against the grammar below and receives the `SnackDrink` discount:
+Combo offers are displayed directly below the customer product catalog. The customer cart turns its product categories into a token sequence and checks that sequence with the CYK algorithm. For example, a snack followed by a beverage is parsed against the grammar below and receives the `SnackDrink` discount:
 
 ```text
 Deal -> SnackDrink | SnackPairDrink
@@ -44,7 +44,7 @@ SnackDrink -> snack beverage
 SnackPairDrink -> snack snack beverage
 ```
 
-The admin can edit these productions and set a discount percentage for every alternative under `Deal`. The app removes ε-productions, unit productions, and useless symbols, converts the grammar to Chomsky Normal Form, and checks the category sequence with CYK. The customer sees the applied discount, normalization steps, and a parse tree beside the live workflow. If one cart parses through different Deal branches that offer different discounts, checkout is blocked until the grammar is made unambiguous for that sequence or the branches are given the same discount.
+The admin can edit these productions and set a discount percentage for every alternative under `Deal`. The app removes ε-productions, unit productions, and useless symbols, converts the grammar to Chomsky Normal Form, and checks the category sequence with CYK. A dedicated Unit V CFG panel between the Unit I–III cards and the live workflow shows the applied discount, normalization steps, derivation, and parse tree. If one cart parses through different Deal branches that offer different discounts, checkout is blocked until the grammar is made unambiguous for that sequence or the branches are given the same discount.
 
 ## Run locally
 
